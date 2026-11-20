@@ -5,14 +5,14 @@ each ring, with a one-pixel soft edge. Run from anywhere:
 
     python tools/make-icons.py
 
-Writes icons/icon-192.png, icon-512.png, maskable-512.png (full bleed, the
+Writes appicons/icon-192.png (not icons/: Apache maps /icons/ to its own folder on every site), icon-512.png, maskable-512.png (full bleed, the
 cone inside the 80% safe zone), apple-touch-icon.png (180, full bleed) and
 icon.svg (for the browser tab).
 """
 import math, os, struct, zlib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(HERE, 'icons')
+OUT = os.path.join(HERE, 'appicons')
 
 BG = (13, 13, 13)          # --page (dark)
 TILE = (26, 26, 25)        # --surface-1 (dark)

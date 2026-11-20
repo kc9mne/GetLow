@@ -18,7 +18,7 @@ ZIP = os.path.join(ROOT, 'build', 'getlow-site.zip')
 
 # what the app needs, relative to the project folder
 FILES = ['index.html', 'manifest.json', 'css/style.css', 'data/catalogue.js', 'data/OPENISD-LICENSE.txt']
-DIRS = [('js', '.js'), ('icons', '')]
+DIRS = [('js', '.js'), ('appicons', '')]  # not icons/: Apache keeps /icons/ for its own
 PE = 'data/catalogue-pe.js'
 
 HTACCESS = """# GetLow: always check for a new version of these (the offline copy handles the rest)
@@ -64,8 +64,11 @@ def main():
         files.append(PE)
     assert with_pe or PE not in files
 
+    # empty the folder rather than delete it (it may be open in Explorer)
     if os.path.exists(OUT):
-        shutil.rmtree(OUT)
+        for name in os.listdir(OUT):
+            p = os.path.join(OUT, name)
+            shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
     h = hashlib.sha256()
     for f in files:
         src, dst = os.path.join(ROOT, f), os.path.join(OUT, f)
