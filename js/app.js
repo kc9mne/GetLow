@@ -4106,7 +4106,7 @@
     const t = h('div', { class: 'toast' + (bad ? ' bad' : '') }, msg,
       action ? h('button', { class: 'btn small toast-act', onclick: () => { t.remove(); action.run(); } }, action.label) : null);
     document.body.append(t);
-    setTimeout(() => t.remove(), action ? 8000 : bad ? 6000 : 3000);
+    setTimeout(() => t.remove(), action ? (action.ms || 8000) : bad ? 6000 : 3000);
   }
 
   // ---------------------------------------------------------------- top bar
@@ -4202,6 +4202,36 @@
     bindTop();
     renderAll();
     bindImport();
+    offline();
+  }
+
+  // Installed (or visited) from a web address: keep a copy for offline use, and
+  // offer the new version when one is uploaded. Not on a local dev server, where
+  // a cached copy would hide your edits.
+  function offline() {
+    const local = /^(localhost|127\.|\[::1\]|.*\.localhost$)/.test(location.hostname);
+    // ?sw tries it on a local server too (to test a build before uploading it)
+    const force = /[?&]sw(=|&|$)/.test(location.search) && local;
+    if (!('serviceWorker' in navigator) || !(force || (location.protocol === 'https:' && !local))) return;
+    // reload only when a new version replaces the old one, not on the first visit
+    const had = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!had || reloading) return;
+      reloading = true;
+      try { saveWorkspace(); } catch (e) { /* nothing to keep */ }
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      const offer = (w) => toast('A new version of GetLow is ready.', false, { label: 'Update now', run: () => w.postMessage('skip'), ms: 30000 });
+      if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+      reg.addEventListener('updatefound', () => {
+        const w = reg.installing;
+        if (w) w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
+      });
+      // look for a new version now and then while it's open
+      setInterval(() => reg.update().catch(() => null), 60 * 60 * 1000);
+    }).catch(() => null);
   }
 
   GL.app = { S, boot, compute, newDesign, setDim, get results() { return R; } };

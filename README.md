@@ -12,6 +12,16 @@ python -m http.server 8765
 
 then go to http://localhost:8765. The 3D view loads Three.js from a CDN, so it needs internet the first time.
 
+### Publishing it as an installable app
+
+GetLow can be served from any web server over HTTPS and installed from there (Chrome or Edge: *Install* in the address bar; Safari on a Mac: *File → Add to Dock*). Installed, it runs in its own window and works offline.
+
+```bash
+python tools/build-site.py
+```
+
+builds `build/getlow/` and `build/getlow-site.zip`: the app, an offline copy script (`sw.js`, versioned from the files' contents), the manifest and icons, and an `.htaccess` that stops Apache caching the files that announce a new version. Add `--with-pe` to include the Parts Express catalogue (prices are taken out, since they go stale). Upload the folder's contents, or the zip and extract it, to where it's served (e.g. `/var/www/html/getlow/` for `https://example.com/getlow/`; with Webmin, *Tools → Upload and Download* or *File Manager* can extract a zip). After you upload a changed build, open copies offer *Update now*, and installed copies pick it up the next time they open. To try a build first, serve `build/getlow` locally and open it with `?sw` (e.g. `http://localhost:8766/?sw`): the offline copy is otherwise off on local servers, so it never hides your edits while you work. The icons come from `python tools/make-icons.py`.
+
 Physics tests: open `tests/tests.html`. It compares the solver with closed-form results (sealed Fc/Qtc, vented and PR tuning, quarter-wave pipe, sensitivity, volume math).
 
 ## What it does
