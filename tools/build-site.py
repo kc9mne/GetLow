@@ -46,8 +46,8 @@ def pe_without_prices(text):
     data = json.loads(m.group(2))
     for d in data.get('raw', []):
         d.pop('price', None)
-    head = m.group(1).replace('That data has no licence: keep this file to your own copy of GetLow.',
-                              'Prices removed for publishing; specs link back to each product page.')
+    head = re.sub(r' \* (That data has no licence[^\n]*|Specs from the public product pages[^\n]*)\*/',
+                  ' * Prices removed for publishing; each driver links back to its product page. */', m.group(1))
     return head + json.dumps(data, separators=(',', ':')) + m.group(3)
 
 

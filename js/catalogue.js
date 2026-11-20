@@ -1,5 +1,5 @@
 /* GetLow – catalogue helpers. Parts Express drivers scraped from product
- * pages (data/catalogue-pe.js, built locally) are read with the same spec
+ * pages (data/catalogue-pe.js, from tools/build-pe-extra.py) are read with the same spec
  * reader as Paste specs, screened, and merged into the OpenISD catalogue. */
 (function (GL) {
   'use strict';
