@@ -1,0 +1,11 @@
+# Parts Express scrape: no licence, keep it to your own copy (built by tools/build-pe-extra.py)
+data/catalogue-pe.js
+
+# local Claude settings
+.claude/settings.local.json
+
+# Python and editor clutter
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

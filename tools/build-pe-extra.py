@@ -1,0 +1,116 @@
+"""Add Parts Express drivers that the OpenISD catalogue lacks.
+
+Reads a local clone of https://github.com/meowelectronics/parts-express-database
+(a scrape of parts-express.com product pages, with no licence of its own), keeps
+drivers with T/S parameters that are not already in data/catalogue.js, and
+writes data/catalogue-pe.js for this copy of GetLow only. The values are kept
+as the raw spec lines from the product page; GetLow reads them with the same
+spec reader as Paste specs, fixes litre/ft3 slips and skips drivers whose
+numbers don't agree with each other.
+
+    git clone https://github.com/meowelectronics/parts-express-database PATH
+    python tools/build-pe-extra.py PATH
+
+Run tools/build-catalogue.py first (this skips drivers already in it).
+"""
+import json, os, re, sys, glob, datetime
+
+if len(sys.argv) < 2:
+    sys.exit(__doc__)
+SRC = os.path.abspath(sys.argv[1])
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CAT = os.path.join(HERE, 'data', 'catalogue.js')
+OUT = os.path.join(HERE, 'data', 'catalogue-pe.js')
+
+norm = lambda x: re.sub(r'[^a-z0-9]', '', (x or '').lower())
+
+# what the OpenISD catalogue already has
+have = set()
+if os.path.exists(CAT):
+    s = open(CAT, encoding='utf-8').read()
+    cat = json.loads(s[s.index('GL.catalogue = ') + 15:].rstrip().rstrip(';'))
+    for d in cat['drivers']:
+        have.add(norm(d['model']))
+        m = re.search(r'-(\d{3}-\d{3,4})(?:$|[?#])', d.get('page') or '')
+        if m:
+            have.add('pn:' + m.group(1))
+
+
+def known(p):
+    pd = p.get('Product Details') or {}
+    if 'pn:' + (pd.get('Part Number') or '') in have or norm(pd.get('Model')) in have:
+        return True
+    for tok in re.findall(r'[A-Za-z0-9.\-]*\d[A-Za-z0-9.\-]*', p.get('title', '')):
+        if len(norm(tok)) >= 5 and norm(tok) in have:
+            return True
+    # OpenISD often names impedance variants "15DS115-4"; Parts Express lists "15DS115" + "4 Ohm"
+    z = re.search(r'(\d+(?:\.\d+)?)\s*ohm', p.get('title', ''), re.I)
+    if z and pd.get('Model') and norm(pd['Model'] + z.group(1)) in have:
+        return True
+    return False
+
+
+def inches(s):
+    """'6-1/2"' -> 6.5, '10"' -> 10"""
+    m = re.match(r'\s*(\d+)(?:[- ](\d+)/(\d+))?\s*(?:"|in)', s or '')
+    if not m:
+        return None
+    v = float(m.group(1))
+    if m.group(2):
+        v += float(m.group(2)) / float(m.group(3))
+    return round(v, 2)
+
+
+TYPES = {'subwoofer': ['sub', 'bass', 'woofer'], 'woofers': ['bass', 'woofer'], 'midrange': ['mid']}
+SECTIONS = ['Product Details', 'Product Specifications', 'Thiele-Small Parameters', 'Mounting Information']
+out, seen, scraped = [], set(), None
+for f in sorted(glob.glob(os.path.join(SRC, 'partsexpress_*_with_ts_params.json'))):
+    d = json.load(open(f, encoding='utf-8'))
+    if 'products' not in d:
+        continue                                   # the older summary file
+    scraped = scraped or (d.get('scraped_at_utc') or '')[:10]
+    kind = next((v for k, v in TYPES.items() if k in os.path.basename(f)), ['bass'])
+    for p in d['products']:
+        if not p.get('has_thiele_small_parameters') or known(p):
+            continue
+        pd = p.get('Product Details') or {}
+        pn = pd.get('Part Number') or p['url']
+        if pn in seen:
+            continue
+        seen.add(pn)
+        lines = []
+        for sec in SECTIONS:
+            for k, v in (p.get(sec) or {}).items():
+                if k in ('UPC', 'Unit of Measure', 'Weight'):
+                    continue
+                lines.append(k + '\t' + str(v))
+        title = p.get('title', '')
+        types = list(kind) + (['fullrange'] if re.search(r'full[- ]?range', title, re.I) else [])
+        rec = p.get('Parts Express Staff Recommended Enclosure Volume') or {}
+        out.append({
+            'id': 'pe/' + pn, 'brand': pd.get('Brand') or p.get('brand') or '', 'model': pd.get('Model') or title,
+            'desc': title, 'page': p['url'], 'pn': pn, 'price': p.get('price_usd'),
+            'size': inches((p.get('Product Specifications') or {}).get('Nominal Diameter')),
+            'types': types, 'text': '\n'.join(lines), 'peBox': rec or None,
+        })
+
+# the same model in several impedances: name each by its impedance
+names = {}
+for r in out:
+    names.setdefault((r['brand'], r['model']), []).append(r)
+for (brand, model), group in names.items():
+    if len(group) > 1:
+        for r in group:
+            z = re.search(r'(\d+(?:\.\d+)?)\s*ohm', r['desc'], re.I) or re.search(r'Impedance\t(\d+(?:\.\d+)?)', r['text'])
+            if z:
+                r['model'] = model + ' (' + z.group(1) + ' Ω)'
+
+data = {'source': 'Parts Express product pages, scraped ' + (scraped or '?') + ' (github.com/meowelectronics/parts-express-database)',
+        'built': datetime.date.today().isoformat(), 'scraped': scraped, 'raw': out}
+with open(OUT, 'w', encoding='utf-8') as fh:
+    fh.write('/* Generated by tools/build-pe-extra.py from a local clone of the parts-express-database scrape.\n'
+             ' * That data has no licence: keep this file to your own copy of GetLow. */\n')
+    fh.write('window.GL = window.GL || {}; GL.catalogueExtra = ')
+    json.dump(data, fh, ensure_ascii=False, separators=(',', ':'))
+    fh.write(';\n')
+print('%d Parts Express drivers not in the OpenISD catalogue, %d KB -> %s' % (len(out), os.path.getsize(OUT) // 1024, OUT))
