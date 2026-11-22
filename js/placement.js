@@ -357,6 +357,23 @@
         }
       }
     }
+    // round ports left on "auto": when the front is full (or the port can't route
+    // from it), try the back, then the sides, top and bottom
+    for (const pt of design.ports) {
+      if (pt.shape === 'slot' || pt.to !== 'out' || (pt.face && pt.face !== 'auto')) continue;
+      const cur = best.ports.find(x => x.pt === pt), fr = best.faces[pt.from];
+      if (cur && cur.route.fits && !(fr && fr.crowded)) continue;
+      for (const wall of ['back', 'left', 'right', 'top', 'bottom']) {
+        const tryOver = Object.assign({}, over, { ['wall:' + pt.id]: wall });
+        const trial = planOnce(design, box, layout, params, tryOver);
+        const mine = trial.ports.find(x => x.pt === pt), tf = trial.faces[pt.from];
+        if (mine && mine.route.wall === wall && mine.route.fits && !(tf && tf.crowded) && !trial.walls.some(w => w.crowded)) {
+          mine.route.movedFrom = 'front';
+          best = trial; over = tryOver;
+          break;
+        }
+      }
+    }
     return best;
   }
 
@@ -413,6 +430,26 @@
       return dividers[key];
     };
 
+    // an outer wall of a chamber (back, sides, top, bottom) as a face for round ports;
+    // only where the chamber actually sits against that wall
+    const walls = {};
+    const wallFace = (id, side) => {
+      const key = id + '|' + side;
+      if (walls[key]) return walls[key];
+      const ch = chambers[id], n = SIDES[side];
+      if (!ch || !n) return null;
+      const ax = axisOf(n), sg = signOf(n);
+      if (ax === 2 && sg > 0) return null;                      // that's the front baffle
+      const outer = sg > 0 ? ext[ax] / 2 : -ext[ax] / 2, inner = sg > 0 ? ch.hi[ax] : ch.lo[ax];
+      if (Math.abs(Math.abs(outer - inner) - t) > 1e-6) return null;
+      const uv = [0, 1, 2].filter(k => k !== ax);
+      const f = { kind: 'wall', side, id, plane: ax, sign: sg, coord: outer, tb: t, uv,
+        rect: { lo: uv.map(k => ch.lo[k]), hi: uv.map(k => ch.hi[k]) }, items: [], slots: [], crowded: false };
+      faces.push(f);
+      walls[key] = f;
+      return f;
+    };
+
     const mount = design.mount;
     if (mount.front === 'out') {
       if (front[mount.rear]) for (let k = 0; k < design.count; k++) front[mount.rear].items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear });
@@ -428,8 +465,11 @@
     }
     for (const pt of design.ports) {
       let f = null;
-      if (pt.to === 'out') f = front[pt.from];
-      else f = divider(pt.from, pt.to);
+      if (pt.to === 'out') {
+        // slots stay on the baffle; round ports go on the wall asked for (or tried by plan())
+        const wall = pt.shape === 'slot' ? 'front' : (over['wall:' + pt.id] || (pt.face && pt.face !== 'auto' ? pt.face : 'front'));
+        f = wall === 'front' ? front[pt.from] : (wallFace(pt.from, wall) || front[pt.from]);
+      } else f = divider(pt.from, pt.to);
       if (!f) continue;
       const sz = pt.shape === 'slot' ? pt.w : pt.d + 2 * (pt.wall || 0) + 2 * Math.max(pt.flareOut || 0, pt.flareIn || 0);
       // through-chamber slot: mouth on the neighbour's baffle, along its outer wall,
@@ -451,9 +491,10 @@
 
     // where an item on a face sits, and which way is "into" a chamber
     // the face of f that looks into chamber id (front baffle: its outer face)
-    const faceIn = (f, id) => f.kind === 'front' ? f.coord : (id === f.lowId ? f.lowFace : f.highFace);
-    const other = (f, id) => f.kind === 'front' ? null : (id === f.lowId ? f.highId : f.lowId);
-    const intoDir = (f, into) => f.kind === 'front' ? [0, 0, -1] : unit(f.plane, into === f.lowId ? -1 : 1);
+    const outerFace = (f) => f.kind === 'front' || f.kind === 'wall';
+    const faceIn = (f, id) => outerFace(f) ? f.coord : (id === f.lowId ? f.lowFace : f.highFace);
+    const other = (f, id) => outerFace(f) ? null : (id === f.lowId ? f.highId : f.lowId);
+    const intoDir = (f, into) => f.kind === 'front' ? [0, 0, -1] : f.kind === 'wall' ? unit(f.plane, -f.sign) : unit(f.plane, into === f.lowId ? -1 : 1);
     const point = (f, u, v, coord) => { const P = [0, 0, 0]; P[f.uv[0]] = u; P[f.uv[1]] = v; P[f.plane] = coord; return P; };
 
     const out = { faces: {}, dividers: Object.values(dividers), ports: [], drivers: [], prs: [], drv, zFace: zF };
@@ -520,6 +561,11 @@
       // what the row needs, by box axis (0 = W, 1 = H, 2 = D), so the box can be grown to fit
       f.fit = { rowAxis: f.uv[row], acrossAxis: f.uv[1 - row], along, across, total, maxSize: items.length ? Math.max(...items.map(it => it.size)) : 0, n: items.length,
         hasDriver: items.some(it => it.type === 'drv') };
+      // what the face needs without round ports left on "auto" (they can move to another wall)
+      const stay = items.filter(it => !(f.kind === 'front' && it.type === 'port' && it.pt.shape !== 'slot' && (!it.pt.face || it.pt.face === 'auto')));
+      const stayOthers = stay.filter(it => it.type !== 'drv');
+      f.fit.fixed = { n: stay.length, maxSize: stay.length ? Math.max(...stay.map(it => it.size)) : 0,
+        total: pitched ? groupLen + stayOthers.reduce((s2, it) => s2 + it.size, 0) : stay.reduce((s2, it) => s2 + it.size, 0) };
       const gap = Math.max(0, (along - total) / (items.length + 1));
       let cur = rect.lo[row] + gap;
       // pitched: the driver group from the top end, the others evenly in the rest
@@ -610,10 +656,12 @@
       sp.obs.splice(sp.obs.indexOf(j.ph), 1);
       const r = routeRound(sp, j.P0, j.back, it.pt, it.pt.bends !== 'none');
       r.front = j.f.kind === 'front';
+      r.wall = j.f.kind === 'wall' ? j.f.side : j.f.kind === 'front' ? 'front' : null;
       it.route = r;
       sp.obs.push(tubeObstacle(samples(r.pts), r.R));
       out.ports.push({ pt: it.pt, k: it.k, chamber: it.into, route: r });
     }
+    out.walls = Object.values(walls);
     out.braces = [];
     out.braceIssues = [];
     for (const ch of design.chambers) placeBraces(out, ch, chambers[ch.id], { t, zF, zFi, zBi, drv });

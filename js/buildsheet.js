@@ -45,20 +45,20 @@
     const feats = [];
     if (plan) {
       for (const d of plan.drivers) {
-        feats.push({ kind: 'driver', P: d.pos, d: drvCut.d, est: drvCut.est, label: 'Driver cutout', screws: scr, dir: d.dir });
+        feats.push({ kind: 'driver', face: d.front ? 'front' : 'divider', P: d.pos, d: drvCut.d, est: drvCut.est, label: 'Driver cutout', screws: scr, dir: d.dir });
       }
       for (const p of plan.prs) {
         const pr = design.prs[0];
         const c = pr ? prCutout(pr.sd) : { d: 2 * p.r * 0.88, est: true };
-        feats.push({ kind: 'pr', P: p.pos, d: c.d, est: c.est, label: 'Passive radiator cutout' });
+        feats.push({ kind: 'pr', face: 'front', P: p.pos, d: c.d, est: c.est, label: 'Passive radiator cutout' });
       }
       for (const p of plan.ports) {
         const r = p.route;
         if (!r) continue;
         if (r.kind === 'round' && r.pts && r.pts.length) {
-          feats.push({ kind: 'port', P: r.pts[0], d: p.pt.d + 2 * (p.pt.wall || 0), label: p.pt.name + ' hole (tube outside)' });
+          feats.push({ kind: 'port', face: r.wall || (r.front ? 'front' : 'divider'), P: r.pts[0], d: p.pt.d + 2 * (p.pt.wall || 0), label: p.pt.name + ' hole (tube outside)' });
         } else if (r.kind === 'slot' && r.opening) {
-          feats.push({ kind: 'slot', box3: r.opening, label: p.pt.name + ' slot opening' });
+          feats.push({ kind: 'slot', face: r.front ? 'front' : 'divider', box3: r.opening, label: p.pt.name + ' slot opening' });
           if (r.via && r.frame) {
             // the notch in the divider the slot passes through, at the back
             const lo = [0, 0, 0], hi = [0, 0, 0], f = r.frame;
@@ -71,12 +71,15 @@
     }
 
     // frame for each panel: which axes run left-right and bottom-up, and its origin
-    const frontFrame = { u: 0, v: 1, u0: -W / 2 + t, v0: -H / 2 + t, w: W - 2 * t, h: H - 2 * t, plane: 2,
+    const frontFrame = { face: 'front', u: 0, v: 1, u0: -W / 2 + t, v0: -H / 2 + t, w: W - 2 * t, h: H - 2 * t, plane: 2,
       edges: { left: 'left side', right: 'right side', top: 'top', bottom: 'bottom' }, view: 'Seen from the front' };
-    const toPanel = (fr, P) => [P[fr.u] - fr.u0, P[fr.v] - fr.v0];
+    // a frame may flip an axis (su, sv = -1) so every panel is drawn as seen from outside
+    const toPanel = (fr, P) => [(fr.su || 1) * P[fr.u] + (fr.cu != null ? fr.cu : -fr.u0), (fr.sv || 1) * P[fr.v] + (fr.cv != null ? fr.cv : -fr.v0)];
+    const near0 = (lo, hi) => (x) => x > lo - 1e-4 && x < hi + 1e-4;
     const holesOn = (fr, onPlane, notchOk) => {
       const holes = [];
       for (const f of feats) {
+        if (fr.face && f.face && f.face !== fr.face && f.kind !== 'notch') continue;
         if (f.kind === 'notch') {
           if (!notchOk || !notchOk(f)) continue;
         } else if (f.P) {
@@ -118,9 +121,34 @@
           note: r.qty > 1 || /outer layer/.test(r.name) ? 'Every layer gets the same cutouts' + (inner ? '' : '; screw the drivers into the outer one') + '. To flush-mount the drivers, rebate the outer layer to the frame size.' : null });
         continue;
       }
-      if (r.name === 'Back' && o.terminal && o.terminal.on && o.terminal.size > 0) {
+      if (r.name === 'Top / bottom' || r.name === 'Sides') {
+        // seen from outside; a pair with a port on one of them becomes two panels
+        const top = r.name === 'Top / bottom';
+        const w = top ? r.a : r.b, hh = top ? r.b : r.a;
+        const frames = top
+          ? [{ name: 'Top', face: 'top', u: 0, v: 2, su: 1, sv: -1, cu: w / 2, cv: hh / 2, plane: 1, on: near0(H / 2 - t, H / 2), view: 'Seen from above',
+               edges: { left: 'left side', right: 'right side', top: 'back', bottom: 'front' } },
+             { name: 'Bottom', face: 'bottom', u: 0, v: 2, su: -1, sv: -1, cu: w / 2, cv: hh / 2, plane: 1, on: near0(-H / 2, -H / 2 + t), view: 'Seen from below',
+               edges: { left: 'right side', right: 'left side', top: 'back', bottom: 'front' } }]
+          : [{ name: 'Left side', face: 'left', u: 2, v: 1, su: 1, sv: 1, cu: w / 2, cv: hh / 2, plane: 0, on: near0(-W / 2, -W / 2 + t), view: 'Seen from the left',
+               edges: { left: 'back', right: 'front', top: 'top', bottom: 'bottom' } },
+             { name: 'Right side', face: 'right', u: 2, v: 1, su: -1, sv: 1, cu: w / 2, cv: hh / 2, plane: 0, on: near0(W / 2 - t, W / 2), view: 'Seen from the right',
+               edges: { left: 'front', right: 'back', top: 'top', bottom: 'bottom' } }];
+        const each = frames.map(fr => { Object.assign(fr, { w, h: hh }); fr.holes = holesOn(fr, fr.on); return fr; });
+        if (each.some(fr => fr.holes.length)) {
+          for (const fr of each) out.push({ name: fr.name, qty: 1, w, h: hh, holes: fr.holes, edges: fr.edges, view: fr.view });
+        } else out.push({ name: r.name, qty: r.qty, w, h: hh, holes: [], edges: each[0].edges, view: top ? 'Top seen from above' : 'Left side seen from the left' });
+        continue;
+      }
+      if (r.name === 'Back') {
+        const fr = { face: 'back', u: 0, v: 1, su: -1, sv: 1, cu: r.a / 2, cv: r.b / 2, w: r.a, h: r.b, plane: 2 };
+        const holes = holesOn(fr, near0(-D / 2, -D / 2 + t));
+        const cup = o.terminal && o.terminal.on && o.terminal.size > 0;
+        if (!cup) {
+          out.push({ name: r.name, qty: r.qty, w: r.a, h: r.b, holes, edges: { left: 'right side', right: 'left side', top: 'top', bottom: 'bottom' }, view: 'Seen from behind' });
+          continue;
+        }
         // terminal cup: in the chamber the driver's motor is in, low on the back
-        const fr = { u: 0, v: 1, u0: -r.a / 2, v0: -r.b / 2, w: r.a, h: r.b, plane: 2 };
         let cx = 0, cy = -H / 2 + t + Math.max(o.terminal.size, (H - 2 * t) * 0.3);
         if (layout && layout.chambers.length > 1 && design.mount) {
           const ext = [W, H, D], c = layout.chambers.find(x => x.id === design.mount.rear) || layout.chambers[0];
@@ -128,10 +156,10 @@
           if (sa === 0) cx = mid; else cy = mid;
         }
         // seen from behind, left and right swap
-        const u = -cx - fr.u0, v = cy - fr.v0, s2 = o.terminal.size;
-        const holes = o.terminal.shape === 'round'
-          ? [{ kind: 'terminal', shape: 'circle', u, v, d: s2, label: 'Terminal cup cutout' }]
-          : [{ kind: 'terminal', shape: 'rect', u: u - s2 / 2, v: v - s2 / 2, w: s2, h: s2, label: 'Terminal cup cutout' }];
+        const [u, v] = toPanel(fr, [cx, cy, 0]), s2 = o.terminal.size;
+        holes.push(o.terminal.shape === 'round'
+          ? { kind: 'terminal', shape: 'circle', u, v, d: s2, label: 'Terminal cup cutout' }
+          : { kind: 'terminal', shape: 'rect', u: u - s2 / 2, v: v - s2 / 2, w: s2, h: s2, label: 'Terminal cup cutout' });
         out.push({ name: r.name, qty: r.qty, w: r.a, h: r.b, holes, edges: { left: 'right side', right: 'left side', top: 'top', bottom: 'bottom' }, view: 'Seen from behind',
           note: 'Check the cup\'s own cutout size before cutting; seal it with its gasket or a bead of caulk.' });
         continue;
@@ -142,9 +170,9 @@
           const c = layout.chambers[i], c2 = layout.chambers[i + 1];
           const low = -ext[sa] / 2 + c.start + c.len, high = low + t;
           const fr = sa === 0
-            ? { u: 2, v: 1, u0: zBi, v0: -H / 2 + t, w: intD, h: H - 2 * t, plane: 0,
+            ? { face: 'divider', u: 2, v: 1, u0: zBi, v0: -H / 2 + t, w: intD, h: H - 2 * t, plane: 0,
                 edges: { left: 'back', right: 'front', top: 'top', bottom: 'bottom' }, view: 'Seen from the ' + (c.name || 'left chamber').toLowerCase() + ' side' }
-            : { u: 0, v: 2, u0: -W / 2 + t, v0: zBi, w: W - 2 * t, h: intD, plane: 1,
+            : { face: 'divider', u: 0, v: 2, u0: -W / 2 + t, v0: zBi, w: W - 2 * t, h: intD, plane: 1,
                 edges: { left: 'left side', right: 'right side', top: 'front', bottom: 'back' }, view: 'Seen from above' };
           const ids = [c.id, c2.id];
           const holes = holesOn(fr, (x) => x > low - 1e-4 && x < high + 1e-4, (f) => f.via && f.via.every(id => ids.includes(id)));

@@ -314,17 +314,20 @@
     const find = (re) => parts.find(p => re.test(p.name));
     const put = (p, fn) => { if (p) all.push(...place(plate(p, t), fn)); };
     // panel frames: u along one box axis, v along another, plate thickness along the third
-    const top = find(/^Top \/ bottom/), side = find(/^Sides/), back = find(/^Back/);
+    const top = find(/^Top$|^Top \/ bottom/), bottom = find(/^Bottom$|^Top \/ bottom/);
+    const left = find(/^Left side$|^Sides/), right = find(/^Right side$|^Sides/), back = find(/^Back/);
     const fronts = parts.filter(p => /^Front baffle/.test(p.name));
     // butt-joint sizes, whatever joint the build sheet uses
     const bt = (p, a, b) => p && Object.assign({}, p, { w: a, h: b, holes: p.holes.map(x => Object.assign({}, x, x.shape === 'circle'
       ? { u: x.u - (p.w - a) / 2, v: x.v - (p.h - b) / 2 } : { u: x.u - (p.w - a) / 2, v: x.v - (p.h - b) / 2 })) });
     const iw = W - 2 * t, ih = H - 2 * t;
     // (every mapping is a turn, never a mirror, so the faces keep pointing out)
-    put(bt(top, W, D), ([u, v, z]) => [u, z, d - v]);                            // bottom: x = u, y = thickness, z from the front
+    // panels are drawn as seen from outside: top u = x, v from the back; bottom mirrored in x;
+    // sides u along the depth (left from the back, right from the front), v up
+    put(bt(bottom, W, D), ([u, v, z]) => [w - u, T - z, d - v]);                 // bottom
     put(bt(top, W, D), ([u, v, z]) => [u, hh - T + z, d - v]);                   // top
-    put(bt(side, ih, D), ([u, v, z]) => [z, T + u, v]);                          // left: y = u, z = v
-    put(bt(side, ih, D), ([u, v, z]) => [w - T + z, T + u, v]);                  // right
+    put(bt(left, D, ih), ([u, v, z]) => [T - z, T + v, u]);                      // left
+    put(bt(right, D, ih), ([u, v, z]) => [w - T + z, T + v, d - u]);             // right
     if (back) put(bt(back, iw, ih), ([u, v, z]) => [T + (iw * MM - u), T + v, T - z]);  // back, seen from behind
     let zf = d - T;
     for (const f of fronts) {

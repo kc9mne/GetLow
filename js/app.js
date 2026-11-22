@@ -269,7 +269,13 @@
   }
 
   // ---------------------------------------------------------------- design helpers
-  function newDesign(type) {
+  // A new alignment. By default it keeps the box you have (size, locks, the line
+  // array's column) and fills it; opts.reset starts from the suggested volume
+  // instead, still keeping the shape you've locked.
+  function newDesign(type, opts = {}) {
+    const old = S.design;
+    const keepBox = !opts.reset && !opts.fresh && old && !E.isBoxless(old.type) && !E.isLine(old.type) && !E.isHorn(old.type) &&
+      !E.isBoxless(type) && !E.isLine(type) && !E.isHorn(type) && S.box.ext.W > 0;
     const keep = S.design ? { count: S.design.count, wiring: S.design.wiring, iso: S.design.iso } : { count: 1, wiring: 'parallel' };
     if (type === 'manifold') keep.count = Math.max(2, keep.count + (keep.count % 2));   // half on each side
     const d = E.makeDesign(type, drvc(), keep.count);
@@ -278,9 +284,13 @@
     S.design = d;
     S.box.minLen = {};                // (worked out again for the new design)
     for (const pt of d.ports) { pt.holdFb = true; pt.fb = E.portFb(pt, chamberById(pt.from).vol); }
-    if (!E.isBoxless(type)) {
+    if (sharedArray() && type !== 'manifold') d.rowPitch = S.array.pitch;
+    if (keepBox) fillBox(d);
+    else if (!E.isBoxless(type)) {
       const lay = G.layout(d, S.box);
-      G.applyRatio(S.box, lay.gross, lay.n, { W: 1.25, H: 1, D: 0.9 });
+      if (sharedArray()) { columnBox(); G.solveDims(S.box, lay.gross, lay.n, null); }
+      else if (opts.reset && ['W', 'H', 'D'].some(k => S.box.lock[k])) G.solveDims(S.box, lay.gross, lay.n, null);
+      else G.applyRatio(S.box, lay.gross, lay.n, { W: 1.25, H: 1, D: 0.9 });
     }
     // Horns usually carry midrange too: open the charts to 20 kHz, and put
     // the bass range back when leaving horns (unless the user changed it).
@@ -292,6 +302,37 @@
       if (sig.fmax === 20000) { sig.fmin = sig.hornRange.fmin; sig.fmax = sig.hornRange.fmax; }
       delete sig.hornRange;
     }
+  }
+
+  // Fill the box as it is: share out whatever the walls, drivers and ports leave,
+  // in the proportions the new design suggests; ports keep their tuning.
+  function fillBox(d) {
+    const total0 = d.chambers.reduce((s2, c) => s2 + c.vol, 0);
+    const chamberOf = (pt) => d.chambers.find(c => c.id === pt.from);
+    // the air the box has for the chambers, with the new design's ports in it
+    const room = () => { const lay = G.layout(d, S.box); return lay.intVol > 0 ? d.chambers.reduce((s2, c) => s2 + c.vol, 0) + lay.mismatch : 0; };
+    let avail = room();
+    if (!(avail > 0)) return total0;
+    // share it in the proportions the new design suggests
+    const share = (v) => d.chambers.forEach(c => { c.vol = Math.max(0.0001, v * c.vol / d.chambers.reduce((s2, x) => s2 + x.vol, 0)); });
+    share(avail);
+    // A one-chamber vented box: tune for the volume it actually has. Keele's QB3,
+    // fb = 0.42·Fs·Qts^-0.9 at Vb = 15·Qts^2.87·Vas, is fb ≈ 0.97·Fs·(Vas/Vb)^0.31 at any Vb.
+    if (d.chambers.length === 1 && d.ports.length) {
+      const p = drvc().params, vasAll = p.vas * Math.max(1, d.count);
+      const fb = Math.max(15, Math.min(250, 0.97 * p.fs * Math.pow(vasAll / d.chambers[0].vol, 0.31)));
+      for (const pt of d.ports) { pt.fb = fb; pt.holdFb = true; }
+    }
+    for (let it = 0; it < 20; it++) {
+      for (const pt of d.ports) if (pt.holdFb && pt.fb > 0) pt.len = Math.max(0.005, E.lenForFb(pt, chamberOf(pt).vol, pt.fb));
+      const now = room();
+      // a port too big for this box would eat it: stop rather than run away
+      if (!(now > 0.15 * avail)) break;
+      share(now);
+      if (Math.abs(now - avail) < 1e-7) break;
+      avail = now;
+    }
+    return total0;
   }
 
   // Manifold: both rear chambers stay the same size (side B follows side A).
@@ -348,8 +389,9 @@
   function faceMins(plan, box, lay) {
     const K = ['W', 'H', 'D'], I = lay.int, mins = {}, minLen = {};
     const n = lay.n;
-    for (const f of Object.values(plan.faces).concat(plan.dividers)) {
-      const ft = f.fit;
+    for (const f of Object.values(plan.faces).concat(plan.dividers, plan.walls || [])) {
+      // round ports on "auto" don't count: when the front is full they move to another wall
+      const ft = f.fit && f.fit.fixed ? Object.assign({}, f.fit, f.fit.fixed) : f.fit;
       if (!ft || !ft.n) continue;
       const gap = 0.006;                                  // about ¼" between and around items
       const want = (axis, need) => {
@@ -405,11 +447,50 @@
     }
   }
 
+  // the smallest outside size along k that still holds the drivers and ports (0: no limit known)
+  function minOutside(k) {
+    const m = boxMins && boxMins.mins && boxMins.mins[k];
+    return m > 0 ? m + S.box.t * G.walls(S.box, k, S.design.chambers.length) : 0;
+  }
+  // Outside size with locks: lock up to two, and the volume moves the third.
+  function dimsCard(title) {
+    const b = S.box, n = S.design.chambers.length;
+    const nLocked = () => ['W', 'H', 'D'].filter(k => b.lock[k]).length;
+    const dimRow = (k, name) => {
+      const cb = h('input', { type: 'checkbox', checked: b.lock[k], 'aria-label': 'Lock the ' + name.toLowerCase(),
+        onchange: (e) => { b.lock[k] = e.target.checked; changed(true); } });
+      // one dimension must stay free to hold the volume
+      if (!b.lock[k] && nLocked() >= 2) { cb.disabled = true; }
+      return h('div', { class: 'dimrow' },
+        uf(name, 'len', () => b.ext[k], (v) => setDim(k, v), { structural: false }),
+        h('label', { class: 'lock', title: !b.lock[k] && nLocked() >= 2 ? 'Two are locked: the third has to move to hold the volume' : 'Lock this dimension' }, cb, 'lock'));
+    };
+    return card(title,
+      check('Hold chamber volumes when I change a dimension', () => b.hold, (v) => { b.hold = v; }, { structural: true }),
+      h('p', { class: 'hint' }, b.hold
+        ? 'Lock the dimensions you want fixed (up to two). Changing the volume, or a size, moves the ones left free.'
+        : 'Volumes follow the box: type the outside size and see what you get inside.'),
+      dimRow('W', 'Width'), dimRow('H', 'Height'), dimRow('D', 'Depth'),
+      liveText(() => {
+        const need = ['W', 'H', 'D'].map(k => [k, minOutside(k)]).filter(x => x[1] > 0);
+        return need.length ? 'Smallest that holds the drivers: ' + need.map(([k, v]) => ({ W: 'width', H: 'height', D: 'depth' }[k]) + ' ' + U.fmt('len', v)).join(', ') + '.' : '';
+      }, 'hint'),
+      h('div', { class: 'row-btns' },
+        btn('Golden ratio', () => { const l = G.layout(S.design, b); G.applyRatio(b, l.gross, n, { W: 1.618, H: 1, D: 0.618 }); changed(); }),
+        btn('Cube', () => { const l = G.layout(S.design, b); G.applyRatio(b, l.gross, n, { W: 1, H: 1, D: 1 }); changed(); })),
+      liveText(() => boxNote, 'hint note'));
+  }
+
   // User typed a new outside dimension.
   function setDim(k, v) {
-    S.box.ext[k] = v;
     boxNote = '';
     const n = S.design.chambers.length;
+    const lo = minOutside(k);
+    if (lo && v < lo - 1e-6) {
+      v = lo;
+      boxNote = 'Held at ' + U.fmt('len', lo) + ': the drivers (and ports) need that much ' + { W: 'width', H: 'height', D: 'depth' }[k] + '.';
+    }
+    S.box.ext[k] = v;
     if (S.box.hold) {
       const lay = G.layout(S.design, S.box);
       const r = G.solveDims(S.box, lay.need, n, k, boxMins && boxMins.mins);
@@ -915,17 +996,30 @@
   // ---------------------------------------------------------------- UI helpers
   function field(label, unit, toD, fromD, digits, get, set, o = {}) {
     const inp = h('input', { type: 'number', step: o.step || 'any', class: 'num', 'aria-label': label });
-    const show = () => {
-      if (document.activeElement === inp) return;
+    // the arrows move by about a tenth of the value's size: 1.54 by 0.1, 0.54 by 0.01, 15 by 1
+    const fitStep = () => {
+      if (o.step) return;
+      const x = Math.abs(parseFloat(inp.value));
+      const st = isFinite(x) && x > 0 ? Math.max(Math.pow(10, -digits), Math.pow(10, Math.floor(Math.log10(x)) - 1)) : Math.pow(10, -Math.min(digits, 2));
+      inp.step = String(+st.toPrecision(1));
+      // a value that can't be zero or less stops one step above zero
+      if (o.positive) inp.min = String(+st.toPrecision(1));
+      else if (o.min != null) inp.min = String(toD(o.min));
+    };
+    const show = (force) => {
+      if (!force && document.activeElement === inp) return;
       const v = get();
       inp.value = isFinite(v) ? String(+toD(v).toFixed(digits)) : '';
+      fitStep();
     };
     show();
-    live.push(show);
+    live.push(() => show());
     inp.addEventListener('change', () => {
       const v = parseFloat(inp.value);
-      if (!isFinite(v) || (o.positive && v <= 0) || (o.min != null && v < o.min)) { show(); return; }
+      // not allowed (a negative volume, say): put the real value straight back
+      if (!isFinite(v) || (o.positive && v <= 0) || (o.min != null && fromD(v) < o.min)) { show(true); return; }
       set(fromD(v));
+      fitStep();
       changed(o.structural);
     });
     return h('label', { class: 'field', title: o.tip || null },
@@ -1150,7 +1244,7 @@
       for (const pt of d.ports) pt.len /= 1.02;
       // drivers, ports and radiators must also fit side by side on every face
       // (with a quarter inch to spare: the loaded box settles a hair differently)
-      const faces = Object.values(plan.faces).concat(plan.dividers);
+      const faces = Object.values(plan.faces).concat(plan.dividers, plan.walls || []);
       const crowded = faces.some(f => f.crowded || (f.slack != null && f.slack < 0.00635));
       return { fit: !crowded && plan.ports.every(x => x.route.fits), bends: Math.max(0, ...plan.ports.map(x => x.route.bends || 0)), vScale };
     };
@@ -1705,7 +1799,8 @@
     out.push(card('Type',
       sel('Enclosure', E.TYPES.map(t => [t.id, t.name]), () => d.type, (v) => newDesign(v)),
       h('p', { class: 'hint' }, E.describe(d)),
-      h('div', { class: 'row-btns' }, btn('Reset to suggested start', () => { newDesign(d.type); changed(true); }))));
+      h('div', { class: 'row-btns' }, btn('Reset to suggested start', () => { newDesign(d.type, { reset: true }); changed(true); })),
+      h('p', { class: 'hint' }, 'Changing the type keeps this box and fills it. "Reset to suggested start" goes back to the suggested volume, keeping any dimensions that are locked.')));
 
     if (d.type === 'sealed') {
       let qtc = 0.707;
@@ -1750,6 +1845,7 @@
             nf('Ql (leakage)', () => ch.ql, (v) => { ch.ql = v; }, { positive: true, digits: 1 }),
             nf('Qa (absorption)', () => ch.qa, (v) => { ch.qa = v; }, { positive: true, digits: 1, tip: 'Before stuffing; the stuffing adds its own absorption on top' })))));
     }
+    if (!E.isBoxless(d.type) && !E.isLine(d.type) && !horn) out.push(dimsCard('Box shape'));
     for (const pt of d.ports) out.push(portCard(pt));
     for (const pr of d.prs) out.push(prCard(pr));
     if (d.line) out.push(lineCard());
@@ -1878,7 +1974,18 @@
              uf('Round-over, inner end', 'len', () => pt.slotIn || 0, (v) => { pt.slotIn = v; }, { positive: false, min: 0, structural: true,
                tip: 'Radius on the end of the slot panel where the air leaves inside the box. Up to the panel thickness on a plain panel edge.' })],
         uf('Tuning (Fb)', 'freq', () => E.portFb(pt, vol()), (v) => { pt.fb = v; pt.holdFb = true; }, { tip: 'Sets the port length' }),
-        uf('Length', 'len', () => pt.len, (v) => { pt.len = v; pt.fb = E.portFb(pt, vol()); }, { tip: pt.shape === 'round' ? 'End to end, flares included' : null })),
+        uf('Length', 'len', () => pt.len, (v) => { pt.len = v; pt.fb = E.portFb(pt, vol()); }, { tip: pt.shape === 'round' ? 'End to end, flares included' : null }),
+        // round ports to the outside can go on any outer wall of their chamber
+        pt.shape === 'round' && pt.to === 'out' && !E.isBoxless(d.type) && !E.isLine(d.type) && !E.isHorn(d.type)
+          ? sel('On the', [['auto', 'Front, or wherever there is room'], ['front', 'Front baffle'], ['back', 'Back'], ['left', 'Left side'], ['right', 'Right side'], ['top', 'Top'], ['bottom', 'Bottom']],
+            () => pt.face || 'auto', (v) => { pt.face = v; }) : null),
+      pt.shape === 'round' && pt.to === 'out' ? liveText(() => {
+        const f = portFit(pt), w = f && f.route.wall;
+        const nm2 = { front: 'the front baffle', back: 'the back', left: 'the left side', right: 'the right side', top: 'the top', bottom: 'the bottom' };
+        if (!w) return '';
+        if (pt.face && pt.face !== 'auto' && pt.face !== w) return 'That chamber does not reach ' + nm2[pt.face] + ', so it stays on ' + nm2[w] + '.';
+        return f.route.movedFrom ? 'On ' + nm2[w] + ': there was no room on the front.' : (w !== 'front' ? 'On ' + nm2[w] + '. A port off the front radiates from there; low down that makes no difference, higher up it does.' : '');
+      }, 'hint') : null,
       pt.shape === 'slot' ? (() => {
         const plane = pt.to === 'out' ? 2 : (S.box.split === 'W' ? 0 : 1);
         const names = { right: 'Right side', left: 'Left side', top: 'Top panel', bottom: 'Bottom panel', back: 'Back panel', front: 'Front baffle' };
@@ -2060,20 +2167,7 @@
         uf('Cutout size', 'len', () => b.terminal.size, (v) => { b.terminal.size = v; }, { tip: 'The hole the cup needs (square side or round diameter): check the cup\'s datasheet' })) : null,
       n > 1 ? sel('Chambers side by side', [['W', 'Across the width'], ['H', 'Stacked (height)']], () => b.split, (v) => { b.split = v; }) : null);
 
-    const dimRow = (k, name) => h('div', { class: 'dimrow' },
-      uf(name, 'len', () => b.ext[k], (v) => setDim(k, v), { structural: false }),
-      h('label', { class: 'lock', title: 'Lock this dimension' },
-        h('input', { type: 'checkbox', checked: b.lock[k], onchange: (e) => { b.lock[k] = e.target.checked; } }), 'lock'));
-    const dims = card('Outside dimensions',
-      check('Hold chamber volumes when I change a dimension', () => b.hold, (v) => { b.hold = v; }, { structural: true }),
-      h('p', { class: 'hint' }, b.hold
-        ? 'Change one size and the unlocked ones resize to keep every chamber\'s net volume.'
-        : 'Volumes follow the box: type the outside size and see what you get inside.'),
-      dimRow('W', 'Width'), dimRow('H', 'Height'), dimRow('D', 'Depth'),
-      h('div', { class: 'row-btns' },
-        btn('Golden ratio', () => { const l = lay(); G.applyRatio(b, l.gross, n, { W: 1.618, H: 1, D: 0.618 }); changed(); }),
-        btn('Cube', () => { const l = lay(); G.applyRatio(b, l.gross, n, { W: 1, H: 1, D: 1 }); changed(); })),
-      liveText(() => boxNote, 'hint note'));
+    const dims = dimsCard('Outside dimensions');
 
     const vt = h('div', { class: 'voltable' });
     const fill = () => {
@@ -3247,7 +3341,7 @@
     }
     const lay = G.layout(S.design, box);
     plan = GL.placement.plan(S.design, box, lay, params);
-    const faces = Object.values(plan.faces).concat(plan.dividers);
+    const faces = Object.values(plan.faces).concat(plan.dividers, plan.walls || []);
     const motorOk = motorRoom(plan, box, lay).every(m => m.have >= m.need - 1e-3);
     return { ext: box.ext, fits: motorOk && !faces.some(f => f.crowded && f.fit && f.fit.hasDriver), ports: plan.ports.every(x => x.route.fits), vol: box.ext.W * box.ext.H * box.ext.D };
   }
@@ -3555,6 +3649,7 @@
       single ? null : h('div', { class: 'checks' }, LAYERS.map(([f, col]) => h('span', { class: 'layerchk' }, h('span', { class: 'k', style: { background: col } }),
         check(hz(f), () => a.layerF.includes(f), (v) => { a.layerF = v ? a.layerF.concat(f).sort((x, y) => x - y) : a.layerF.filter(x => x !== f); })))),
       check('Single frequency, in 6 dB bands', () => single, (v) => { a.fieldMode = v ? 'single' : 'layers'; }, { structural: true }),
+      check('Angle lines (every 10° from the centre of the speaker)', () => a.angleLines !== false, (v) => { a.angleLines = v; }, { structural: false }),
       fieldBox,
       h('p', { class: 'hint' }, single
         ? 'Sound level from the side at one frequency, in bands 6 dB apart, measured down from the loudest spot (not angles). The speaker is on the left, the listener is the ring. Floor and ceiling reflections are included when the placement says so.'
@@ -3563,7 +3658,11 @@
     const drawField = () => {
       if (!fieldBox.isConnected) return;          // another part of the view is showing
       const els = arrayEls(), imgs = LA().images(a);
-      const yTop = Math.max(a.place === 'both' ? a.ceiling : a.top + 0.3, a.listen.h + 0.3, a.top + 0.2), yBot = a.place === 'free' ? Math.min(0, ...els.map(e => e.y)) - 0.3 : 0;
+      let yTop = Math.max(a.place === 'both' ? a.ceiling : a.top + 0.3, a.listen.h + 0.3, a.top + 0.2), yBot = a.place === 'free' ? Math.min(0, ...els.map(e => e.y)) - 0.3 : 0;
+      // centred on the speaker, as much above it as below (the floor and ceiling stay where they are)
+      const cy = els.reduce((s2, e) => s2 + e.y, 0) / Math.max(1, els.length);
+      if (a.place === 'free') { const half = Math.max(yTop - cy, cy - yBot, a.fieldX * 0.3); yTop = cy + half; yBot = cy - half; }
+      else if (a.place === 'floor') yTop = Math.max(yTop, 2 * cy, cy + a.fieldX * 0.3);
       // as wide as the card allows, true to scale
       const W = Math.max(360, Math.min(1400, (fieldBox.clientWidth || 360) - 2));
       const key = JSON.stringify([a, driver().params.sd, driver().breakup, S.box.ext, yTop, yBot, simCount, W]);
@@ -3632,6 +3731,27 @@
         g.beginPath(); g.moveTo(X(Math.max(0, e.x - t[0] * hh)) + 2, Y(e.y - t[1] * hh)); g.lineTo(X(Math.max(0, e.x + t[0] * hh)) + 2, Y(e.y + t[1] * hh)); g.stroke();
       }
       g.lineWidth = 2; g.beginPath(); g.arc(X(a.listen.d), Y(a.listen.h), 5, 0, 2 * Math.PI); g.stroke();
+      // angle lines from the speaker's centre, every 10° (true angles, whatever the picture's scale)
+      if (a.angleLines !== false) {
+        g.save();
+        g.setLineDash([4, 5]); g.lineWidth = 1; g.globalAlpha = 0.55; g.strokeStyle = ink; g.fillStyle = ink;
+        g.font = '11px system-ui, sans-serif'; g.textBaseline = 'middle';
+        const x0 = X(0) + 2, y0 = Y(cy), L = Math.hypot(a.fieldX, yTop - yBot) * 2;
+        for (let deg = -80; deg <= 80; deg += 10) {
+          const r = deg * Math.PI / 180, x1 = X(L * Math.cos(r)), y1 = Y(cy + L * Math.sin(r));
+          g.globalAlpha = deg === 0 ? 0.7 : deg % 30 === 0 ? 0.5 : 0.3;
+          g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+          // label where the line leaves the picture
+          const tx = (W - 4 - x0) / Math.max(1e-6, x1 - x0), ty = ((y1 < y0 ? 4 : Hc - 4) - y0) / Math.max(1e-6, Math.abs(y1 - y0)) * Math.sign(y1 - y0 || 1);
+          const k = Math.min(tx, Math.abs(ty) || Infinity);
+          const lx = x0 + (x1 - x0) * k, ly = y0 + (y1 - y0) * k;
+          g.globalAlpha = 0.85;
+          const txt = (deg > 0 ? '+' : '') + deg + '°';
+          const tw = g.measureText(txt).width;
+          g.fillText(txt, Math.min(W - tw - 3, Math.max(3, lx - (lx > W - 30 ? tw + 4 : tw / 2))), Math.min(Hc - 8, Math.max(8, ly + (ly < 12 ? 8 : ly > Hc - 12 ? -8 : 0))));
+        }
+        g.restore();
+      }
       fieldBox.innerHTML = '';
       fieldBox.append(cv, key2);
     };
@@ -4005,7 +4125,7 @@
     S.box.sub = 'ply';
     // N drivers sharing the box (parallel); newDesign sizes the volumes and ports for all of them
     S.design = { count: Math.max(1, st.count || 1), wiring: 'parallel' };
-    newDesign(type);
+    newDesign(type, { fresh: true });
     S.design.driverDisp = driver().params.dvol || 0;
     S.signal.topFor = st.driverId;
     S.tab = 'enclosure';
@@ -4020,7 +4140,7 @@
       // drivers edge to edge (outer diameter + 2 mm), all in one column box sized for them
       S.array.pitch = GL.match.outerDia(driver().params) + 0.002;
       S.array.n = Math.max(2, st.count || S.array.n);
-      if (S.design.count !== S.array.n) { S.design.count = S.array.n; newDesign(type); }      // volumes and ports for all of them
+      if (S.design.count !== S.array.n) { S.design.count = S.array.n; newDesign(type, { fresh: true }); }      // volumes and ports for all of them
       columnBox();
       S.tab = 'array';
     }
@@ -4072,7 +4192,7 @@
       const { design: d, box } = boxForResult(r, b, params, line);
       const lay = G.layout(d, box);
       const plan = GL.placement.plan(d, box, lay, params);
-      if (Object.values(plan.faces).concat(plan.dividers).some(f => f.crowded && f.fit && f.fit.n)) return false;
+      if (Object.values(plan.faces).concat(plan.dividers, plan.walls || []).some(f => f.crowded && f.fit && f.fit.n)) return false;
       if (!plan.ports.every(x => x.route.fits)) return false;
       return motorRoom(plan, box, lay).every(m => m.have >= m.need - 1e-3);
     } catch (e) { return false; }

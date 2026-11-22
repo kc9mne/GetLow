@@ -370,7 +370,8 @@
     const drvP = { dia: 0.209, sd: 0.0227 };
     const mk = (len, extra) => ({ chambers: [{ id: 'A', name: 'Box', vol: 0.0354, bracing: 0 }], prs: [], count: 1, driverDisp: 0,
       mount: { rear: 'A', front: 'out' },
-      ports: [Object.assign({ from: 'A', to: 'out', shape: 'round', d: 3 * IN, wall: 0.25 * IN, len, count: 1 }, extra)] });
+      // routing from the front baffle (on "auto" a port that can't fit there would move to another wall)
+      ports: [Object.assign({ from: 'A', to: 'out', shape: 'round', d: 3 * IN, wall: 0.25 * IN, len, count: 1, face: 'front' }, extra)] });
     const route = (d) => PL.plan(d, box, G.layout(d, box), drvP).ports[0].route;
     const total = (r) => r.legs.reduce((s, l) => s + l.len, 0);
     const reach = box.ext.D - box.t;
@@ -1313,6 +1314,48 @@
     // a fixed point: excursion that falls with BL settles
     const res = LS.solve([30], [12], 0.01, 0.82, 1.33, (b) => b, (b) => ({ spl: 100 + 20 * Math.log10(b), xpk: 12 * b }));
     truthy('large signal: the excursion settles below the linear guess', res.xpk[0] < 12 && res.xpk[0] > 9, res.xpk[0].toFixed(2) + ' mm');
+  }
+
+  // ---- round ports on any outer wall ----
+  {
+    const box = G.defaultBox();
+    const mk = (face) => ({ chambers: [{ id: 'A', name: 'Box', vol: 0.04, bracing: 0 }],
+      ports: [{ id: 'p', name: 'Port', from: 'A', to: 'out', shape: 'round', d: 3 * IN, len: 5 * IN, count: 1, wall: 0.125 * IN, face }],
+      prs: [], mount: { rear: 'A', front: 'out' }, count: 1, driverDisp: 0 });
+    let sb = mk('back'), lay = G.layout(sb, box);
+    for (let it = 0; it < 6; it++) { G.solveDims(box, lay.gross, 1, null); lay = G.layout(sb, box); }
+    for (const face of ['back', 'left', 'top', 'bottom']) {
+      sb = mk(face);
+      const r = GL.placement.plan(sb, box, G.layout(sb, box), grs.params).ports[0].route;
+      const ax = { back: 2, left: 0, top: 1, bottom: 1 }[face], sg = { back: -1, left: -1, top: 1, bottom: -1 }[face];
+      truthy('ports on any wall: ' + face + ' port starts on that wall and runs inward', r.wall === face && r.fits && Math.abs(r.pts[0][ax] - sg * box.ext['WHD'[ax]] / 2) < 1e-9 && (r.pts[1][ax] - r.pts[0][ax]) * sg < 0, r.wall + ' ' + r.fits);
+    }
+    // "auto": a front with no room left sends it to the back
+    const tight = G.defaultBox();
+    const sb2 = mk('auto');
+    const g = GL.placement.driverGeom(grs.params);
+    // a front just big enough for the driver; the depth holds the volume
+    tight.ext.W = tight.ext.H = 2 * g.r + 2 * tight.t + 0.004;
+    tight.lock = { W: true, H: true, D: false };
+    for (let it = 0; it < 6; it++) G.solveDims(tight, G.layout(sb2, tight).gross, 1, null);
+    const full = GL.placement.plan(mk('front'), tight, G.layout(mk('front'), tight), grs.params).faces.A.crowded;
+    const r2 = GL.placement.plan(sb2, tight, G.layout(sb2, tight), grs.params).ports[0].route;
+    truthy('ports on any wall: auto moves off a full front', full && r2.wall !== 'front' && r2.movedFrom === 'front', 'front full: ' + full + ', port on ' + r2.wall);
+    const parts = GL.buildsheet.panels({ list: G.layout(mk('back'), box).panels.list, box, plan: GL.placement.plan(mk('back'), box, G.layout(mk('back'), box), grs.params), layout: G.layout(mk('back'), box), design: mk('back'), drvCut: GL.buildsheet.driverCutout(grs.params) });
+    const back = parts.find(p => p.name === 'Back'), front = parts.find(p => /^Front/.test(p.name));
+    truthy('ports on any wall: the build sheet puts the hole on the back, not the front', back.holes.some(h => h.kind === 'port') && !front.holes.some(h => h.kind === 'port'), '');
+  }
+
+  // ---- every script compiles (the page itself isn't loaded here) ----
+  {
+    const files = ['app', 'util', 'physics', 'eq', 'crossover', 'largesignal', 'drivers', 'specparse', 'enclosures', 'geometry', 'placement', 'optimize', 'match',
+      'catalogue', 'measure', 'acoustics', 'linearray', 'room', 'buildsheet', 'cutfiles', 'charts', 'frd', 'view3d', 'version'];
+    asyncTests.push(Promise.all(files.map(f => fetch('../js/' + f + '.js', { cache: 'no-store' }).then(r => r.text()).then(t => {
+      try { new Function(t); return null; } catch (e) { return f + '.js: ' + e.message; }
+    }))).then(errs => {
+      const bad = errs.filter(Boolean);
+      truthy('scripts: every file in js/ compiles', !bad.length, bad.join('; ') || files.length + ' files');
+    }));
   }
 
   // ---- room modes and placement ----

@@ -303,7 +303,7 @@
     const d = roundIn(Math.sqrt(4 * area / Math.PI), 0.5);
     return {
       id: pid('p'), name, from, to, shape: 'round', d, w: roundIn(Math.sqrt(area / 4), 0.25),
-      h: roundIn(Math.sqrt(area * 4), 0.25), len: 0.2, count: 1, end: 'flanged-free', qp: 100, wall: 0.25 * IN,
+      h: roundIn(Math.sqrt(area * 4), 0.25), len: 0.2, count: 1, end: 'flanged-free', qp: 100, wall: 0.125 * IN,
       flareOut: 0, flareIn: 0, alongWall: true, fullHeight: false,
     };
   }
