@@ -17,7 +17,7 @@
       'Power compression (voice coil heating) and excursion-dependent BL and suspension at high power.',
       'MIT licence: free and open source.',
       'Box shape on the Enclosure tab: lock up to two dimensions and the volume moves the third, never smaller than the drivers need.',
-      'Changing the enclosure type keeps your box (and a line array's column) and tunes the port for it.',
+      'Changing the enclosure type keeps your box (and a line array\'s column) and tunes the port for it.',
       'Round ports on any wall: front, back, sides, top or bottom; on "auto" they move off a full front.',
       'Number arrows step by about a tenth of the value (1.5, 1.4, 1.3 …), and nothing that must be positive can go to zero or below.',
       'Side view centred on the speaker, with angle lines every 10°. Port tubes default to 1/8" walls.',
