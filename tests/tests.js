@@ -1188,6 +1188,133 @@
     truthy('long slot: no panel longer than the box', r.panels.every(p => p.a <= longest + 1e-9 && p.a >= 0), r.panels.map(p => p.name + ' ' + (p.a / IN).toFixed(2)).join(', ') + ' vs ' + (longest / IN).toFixed(2));
   }
 
+  // ---- EQ: Linkwitz transform and parametric bands ----
+  {
+    const Q = GL.eq, X2 = GL.cx, T = 2 * Math.PI;
+    const hp2 = (w, f, q) => { const w0 = T * f; return X2.cdiv(X2.C(-w * w, 0), X2.C(w0 * w0 - w * w, w * w0 / q)); };
+    const lt = { on: true, f0: 45, q0: 0.95, fp: 22, qp: 0.707 };
+    const worst = Math.max(...[10, 18, 25, 40, 60, 100, 300].map(f => {
+      const w = T * f, a = X2.cmul(hp2(w, 45, 0.95), Q.linkwitz(w, lt)), b = hp2(w, 22, 0.707);
+      return Math.abs(20 * Math.log10(X2.cabs(a) / X2.cabs(b)));
+    }));
+    truthy('EQ: a Linkwitz transform turns a 45 Hz, Q 0.95 box into a 22 Hz, Q 0.707 one', worst < 1e-6, worst.toExponential(2) + ' dB');
+    near('EQ: Linkwitz transform is flat up high', 20 * Math.log10(X2.cabs(Q.linkwitz(T * 5000, lt))), 0, 0.01);
+    near('EQ: peak band has its gain at its frequency', 20 * Math.log10(X2.cabs(Q.band(T * 60, { type: 'peak', f: 60, gain: -6, q: 3 }))), -6, 1e-9);
+    near('EQ: and none far away', 20 * Math.log10(X2.cabs(Q.band(T * 2000, { type: 'peak', f: 60, gain: -6, q: 3 }))), 0, 0.05);
+    near('EQ: low shelf, full gain far below', 20 * Math.log10(X2.cabs(Q.band(T * 2, { type: 'lowshelf', f: 100, gain: 4, q: 0.707 }))), 4, 0.01);
+    near('EQ: low shelf, none far above', 20 * Math.log10(X2.cabs(Q.band(T * 10000, { type: 'lowshelf', f: 100, gain: 4, q: 0.707 }))), 0, 0.01);
+    near('EQ: high shelf, full gain far above', 20 * Math.log10(X2.cabs(Q.band(T * 20000, { type: 'highshelf', f: 1000, gain: -3, q: 0.707 }))), -3, 0.01);
+    near('EQ: the most boost is found', Q.maxBoost({ bands: [{ on: true, type: 'peak', f: 30, gain: 6, q: 2 }] }, 10, 200).db, 6, 0.05);
+  }
+
+  // ---- measurement files (.frd / .zma) ----
+  {
+    const F = GL.frd;
+    const frd = '* REW export\n* Freq(Hz) SPL(dB) Phase(degrees)\n' + Array.from({ length: 300 }, (_, i) => { const f = 10 * Math.pow(2000, i / 299); return f.toFixed(3) + ' ' + (85 + Math.sin(i / 20)).toFixed(3) + ' ' + (-i).toFixed(1); }).join('\n');
+    const m = F.parse('woofer.frd', frd);
+    truthy('measurements: an .frd reads as a response, with phase', m.kind === 'frd' && m.f.length === 300 && m.ph && m.ph[5] === -5, m.kind + ' ' + m.f.length);
+    const zma = 'Freq;Ohms;Deg\n' + Array.from({ length: 40 }, (_, i) => { const f = 10 * Math.pow(100, i / 39); return (f.toFixed(2) + ';' + (6 + 30 / (1 + Math.pow(Math.log(f / 40) * 4, 2))).toFixed(2) + ';0').replace(/\./g, ','); }).join('\n');
+    const z = F.parse('sweep.txt', zma);
+    truthy('measurements: a decimal-comma table of ohms reads as impedance', z.kind === 'zma' && z.f.length === 40 && Math.abs(z.f[0] - 10) < 1e-9, z.kind + ' ' + z.f.length + ' ' + z.f[0]);
+    const big = Array.from({ length: 20000 }, (_, i) => (10 + i) + ' 90').join('\n');
+    const b = F.parse('big.frd', big);
+    truthy('measurements: a huge export is thinned', b.f.length <= 480 && b.points === 20000 && Math.abs(b.y[100] - 90) < 1e-9, b.f.length + ' kept');
+    near('measurements: level match lines a response up', F.matchOffset({ f: [50, 100, 200], y: [80, 80, 80] }, [10, 1000], [92, 92], 40, 300), 12, 1e-9);
+    truthy('measurements: a driver file is not taken for one', !F.looksLike('Fs=30\nQts=0.4\nVas=50\n'), '');
+  }
+
+  // ---- cutting files: DXF, SVG, STL ----
+  {
+    const CF = GL.cutfiles;
+    // closed: every edge used twice, once each way; volume from the divergence theorem
+    const check = (tris) => {
+      const k = (p) => p.map(v => v.toFixed(4)).join(',');
+      const edges = new Map();
+      for (const t of tris) for (let i = 0; i < 3; i++) { const e = k(t[i]) + '>' + k(t[(i + 1) % 3]); edges.set(e, (edges.get(e) || 0) + 1); }
+      let open = 0;
+      // balanced: each edge used as often one way as the other (touching panels share edges)
+      for (const [e, n] of edges) { const [a, b] = e.split('>'); if (edges.get(b + '>' + a) !== n) open++; }
+      let vol = 0;
+      for (const [a, b, c] of tris) vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6;
+      return { open, vol };
+    };
+    const panel = { name: 'Front', qty: 1, w: 0.4, h: 0.3, holes: [
+      { kind: 'driver', shape: 'circle', u: 0.15, v: 0.15, d: 0.18 },
+      { kind: 'port', shape: 'circle', u: 0.33, v: 0.08, d: 0.07 },
+      { kind: 'slot', shape: 'rect', u: 0.37, v: 0, w: 0.03, h: 0.3 },        // a full-height slot opening at the right edge
+      { kind: 'window', shape: 'rect', u: 0.28, v: 0.18, w: 0.06, h: 0.06 }] };
+    const tris = CF.plate(panel, 0.012), c = check(tris);
+    const sh = CF.shape(panel, { seg: 48 });
+    const holeArea = sh.holes.reduce((s, h) => s + (h.type === 'circle' ? 0.5 * h.seg * h.r * h.r * Math.sin(2 * Math.PI / h.seg) : (h.x1 - h.x0) * (h.y1 - h.y0)), 0);
+    const outArea = sh.outline.reduce((s, l) => s + Math.abs(CF.area2(l)), 0);
+    truthy('cut files: a panel with holes and an edge notch prints as a closed solid', c.open === 0, c.open + ' open edges');
+    near('cut files: its volume is (outline - holes) x thickness', c.vol, (outArea - holeArea) * 12, 1e-6 * c.vol);
+    near('cut files: the notch comes off the outline', outArea, 400 * 300 - 30 * 300, 1e-6);
+    // the assembled box: closed panels, all facing out (positive volume)
+    const box = G.defaultBox();
+    const sb = { chambers: [{ id: 'A', name: 'Box', vol: 0.03, bracing: 0 }], ports: [], prs: [], mount: { rear: 'A', front: 'out' }, count: 1, driverDisp: 0 };
+    let lay = G.layout(sb, box);
+    for (let it = 0; it < 6; it++) { G.solveDims(box, lay.gross, 1, null); lay = G.layout(sb, box); }
+    const pl = GL.placement.plan(sb, box, lay, grs.params);
+    const parts = GL.buildsheet.panels({ list: lay.panels.list, box, plan: pl, layout: lay, design: sb, drvCut: GL.buildsheet.driverCutout(grs.params) });
+    const bx = CF.stlBox(parts, Object.assign({}, box, { layout: lay })), cb = check(bx);
+    const wood = parts.filter(p => !p.stock).reduce((s, p) => s + p.qty * p.w * p.h, 0) * box.t * 1e9;
+    truthy('cut files: the assembled box is closed and faces out', cb.open === 0 && cb.vol > 0, cb.open + ' open edges, ' + (cb.vol / 1e6).toFixed(2) + ' L of wood');
+    truthy('cut files: and holds about the wood the cut list says', cb.vol < wood && cb.vol > wood * 0.85, (cb.vol / wood * 100).toFixed(1) + '%');
+    const dxf = CF.dxfPanels(parts);
+    truthy('cut files: DXF has the outlines and the driver cutout', /\nOUTLINE\r?\n/.test(dxf) && (dxf.match(/\nCIRCLE\r?\n/g) || []).length >= 1 && /EOF\r?\n$/.test(dxf), '');
+    truthy('cut files: SVG is in millimetres', /width="[\d.]+mm"/.test(CF.svgPanels(parts)), '');
+    const blob = CF.stlBinary(tris, 'test');
+    truthy('cut files: binary STL is the right size', blob.size === 84 + 50 * tris.length, blob.size + ' bytes');
+  }
+
+  // ---- passive crossovers ----
+  {
+    const XO = GL.crossover, X2 = GL.cx, T = 2 * Math.PI, R0 = 8, fc = 2000;
+    const mag = (parts, f) => X2.cabs(XO.solve(parts, X2.C(R0, 0), T * f).H);
+    const ideal = { bw1: (x) => 1 / Math.sqrt(1 + x * x), lr2: (x) => 1 / (1 + x * x), bw2: (x) => 1 / Math.sqrt(1 + x ** 4), bw3: (x) => 1 / Math.sqrt(1 + x ** 6), lr4: (x) => 1 / (1 + x ** 4) };
+    for (const al of Object.keys(ideal)) {
+      const lp = XO.section(al, fc, R0, false), hp = XO.section(al, fc, R0, true);
+      const err = Math.max(...[300, 1000, 2000, 3000, 9000].map(f => Math.max(
+        Math.abs(20 * Math.log10(mag(lp, f) / ideal[al](f / fc))), Math.abs(20 * Math.log10(mag(hp, f) / ideal[al](fc / f))))));
+      truthy('crossover: ' + al + ' ladder into 8 Ω gives the textbook low- and high-pass', err < 0.01, err.toFixed(4) + ' dB');
+    }
+    // LR4 halves sum flat (in phase); LR2 does with the tweeter reversed
+    const sum = (al, inv) => Math.max(...[500, 1500, 2000, 2600, 6000].map(f => {
+      const a = XO.solve(XO.section(al, fc, R0, false), X2.C(R0, 0), T * f).H, b = XO.solve(XO.section(al, fc, R0, true), X2.C(R0, 0), T * f).H;
+      return Math.abs(20 * Math.log10(X2.cabs(inv ? X2.csub(a, b) : X2.cadd(a, b))));
+    }));
+    truthy('crossover: LR4 low and high sum flat', sum('lr4') < 0.01, sum('lr4').toFixed(4) + ' dB');
+    truthy('crossover: LR2 sums flat with the tweeter reversed', sum('lr2', true) < 0.01, sum('lr2', true).toFixed(4) + ' dB');
+    // L-pad: the cut, and the amp still sees about R
+    const pad = XO.lpad(6, R0), sp = XO.solve(pad, X2.C(R0, 0), T * 1000);
+    near('crossover: L-pad cuts by its setting', 20 * Math.log10(X2.cabs(sp.H)), -6, 1e-9);
+    near('crossover: and keeps the load', X2.cabs(sp.Zin), R0, 1e-9);
+    // Zobel: Re + jωLe in parallel with it is close to flat
+    const zl = (w) => X2.C(6, w * 0.0008), zb = XO.zobel(6, 0.0008);
+    const flat = Math.max(...[2000, 10000, 20000].map(f => Math.abs(X2.cabs(XO.solve(zb, zl(T * f), T * f).Zin) / 7.5 - 1)));
+    truthy('crossover: Zobel flattens the coil\'s rising impedance', flat < 0.05, (flat * 100).toFixed(1) + '%');
+    near('crossover: preferred values', XO.nearest(4.42e-6), 4.7e-6, 1e-12);
+  }
+
+  // ---- power compression and large signal ----
+  {
+    const LS = GL.largesignal;
+    const cold = LS.hotCoil({ re: 3.6, pe: 300, vPer: 0.001, duty: 'sine', rise: 180, coil: 'cu' });
+    near('compression: no heat at a whisper', cold.dT, 0, 1e-3);
+    // at rated power, continuously: about the rated rise (a little less, since the hot coil draws less)
+    const full = LS.hotCoil({ re: 3.6, pe: 300, vPer: Math.sqrt(300 * 3.6), duty: 'sine', rise: 180, coil: 'cu' });
+    truthy('compression: rated power heats the coil by about its rated rise', full.dT > 100 && full.dT < 180, full.dT.toFixed(0) + ' °C, ' + full.db.toFixed(1) + ' dB');
+    near('compression: and is self-consistent (P = V²/Re_hot)', full.P, 300 * 3.6 / full.re, 1e-6);
+    const music = LS.hotCoil({ re: 3.6, pe: 300, vPer: Math.sqrt(300 * 3.6), duty: 'music', rise: 180, coil: 'cu' });
+    truthy('compression: music heats it less than a steady tone', music.dT < full.dT / 4, music.dT.toFixed(0) + ' °C');
+    const e = LS.effective(0.01, 0.01, 0.82, 1.33);
+    truthy('large signal: at a peak of Xmax, BL and stiffness are part way to their Xmax values', Math.abs(e.bl - 0.91) < 1e-9 && Math.abs(e.kms - 1.165) < 1e-9, e.bl + ' ' + e.kms);
+    // a fixed point: excursion that falls with BL settles
+    const res = LS.solve([30], [12], 0.01, 0.82, 1.33, (b) => b, (b) => ({ spl: 100 + 20 * Math.log10(b), xpk: 12 * b }));
+    truthy('large signal: the excursion settles below the linear guess', res.xpk[0] < 12 && res.xpk[0] > 9, res.xpk[0].toFixed(2) + ' mm');
+  }
+
   // ---- room modes and placement ----
   {
     const RM = GL.room, c = GL.phys.c;

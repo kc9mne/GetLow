@@ -16,10 +16,17 @@
   ];
 
   // ---------------------------------------------------------------- state
+  // passive crossover: the design's driver is the woofer; tweeter (and mid) from a few figures
+  function defaultXo() {
+    return { on: false, ways: 2, al: 'lr4', f1: 2500, f2: 3000, zobel: true, offset: 0.02,
+      tw: { sens: 90, fs: 900, qts: 0.7, re: 5.6, le: 0.00005, zmax: 14, pad: 0, invert: false },
+      mid: { sens: 88, fs: 120, qts: 0.7, re: 5.6, le: 0.0003, zmax: 25, pad: 0, invert: false } };
+  }
   function defaultSignal() {
     return { mode: 'volts', volts: 2.83, watts: 100, hp: { on: false, f: 20, order: 2 }, lp: { on: false, f: 80, order: 'lr4' },
       cabin: { on: false, f: 40, max: 20 },
-      airLimit: { on: true, v: 34 }, fmin: 10, fmax: 500 };
+      airLimit: { on: true, v: 34 }, fmin: 10, fmax: 500, eq: GL.eq.defaults(), xo: defaultXo(),
+      ls: { heat: false, duty: 'music', rise: 180, coil: 'cu', big: false, bl: 0.82, kms: 1.33 } };
   }
   // A typical living room: 18 × 13 × 8 ft, sub in a front corner, seat about 2/3 back.
   function defaultRoom() {
@@ -231,7 +238,7 @@
     if (o.driver && !DRV.library.get(o.driver.id)) DRV.library.add(o.driver);
     for (const d of o.drivers || []) if (d && d.id && !DRV.library.get(d.id)) DRV.library.add(d);
     // start from defaults so nothing from the previous project lingers
-    Object.assign(S, { opt: undefined, match: undefined, saved: [], lookNext: 0, room: defaultRoom(), tools: defaultTools(), baffle: defaultBaffle(), array: defaultArray(), contrib: false, kind: undefined });
+    Object.assign(S, { opt: undefined, match: undefined, saved: [], meas: [], lookNext: 0, room: defaultRoom(), tools: defaultTools(), baffle: defaultBaffle(), array: defaultArray(), contrib: false, kind: undefined });
     Object.assign(S, o.state);
     S.tools = Object.assign(defaultTools(), o.state.tools);
     S.baffle = Object.assign(defaultBaffle(), o.state.baffle);
@@ -244,10 +251,19 @@
     S.tools.pipe = Object.assign(defaultTools().pipe, S.tools.pipe);
     S.tools.measure = Object.assign(defaultTools().measure, S.tools.measure);
     S.box = Object.assign(G.defaultBox(), o.state.box);
+    // projects from before joints and terminal cups: butt joints, and a cup only if asked for
+    if (!(o.state.box && o.state.box.terminal)) S.box.terminal = Object.assign(G.defaultBox().terminal, { on: false });
     if (!(o.state.box && o.state.box.sub)) { const mt = G.MATERIALS.find(x => x.id === S.box.material); S.box.sub = (mt && mt.sub) || 'ply'; }
     S.signal = Object.assign(defaultSignal(), o.state.signal);   // older saves lack newer fields
+    S.signal.eq = Object.assign(GL.eq.defaults(), S.signal.eq);
+    S.signal.eq.lt = Object.assign(GL.eq.defaults().lt, S.signal.eq.lt);
+    S.signal.xo = Object.assign(defaultXo(), S.signal.xo);
+    S.signal.ls = Object.assign(defaultSignal().ls, S.signal.ls);
+    S.signal.xo.tw = Object.assign(defaultXo().tw, S.signal.xo.tw);
+    S.signal.xo.mid = Object.assign(defaultXo().mid, S.signal.xo.mid);
     S.room = Object.assign(defaultRoom(), o.state.room);
     S.saved = Array.isArray(o.state.saved) ? o.state.saved : [];
+    S.meas = Array.isArray(o.state.meas) ? o.state.meas : [];
     S.lookNext = Math.max(o.state.lookNext || 0, ...S.saved.map(x => (x.look || 0) + 1), 0);
     U.system = S.units;
   }
@@ -430,18 +446,29 @@
     }
     return H;
   }
+  // the whole signal chain before the amp: subsonic, low-pass and EQ
+  function chainH(w, sig = S.signal) {
+    let H = X.C(1);
+    if (sig.hp.on) H = X.cmul(H, filterResp(w, sig.hp, true));
+    if (sig.lp.on) H = X.cmul(H, filterResp(w, sig.lp, false));
+    return X.cmul(H, GL.eq.response(w, sig.eq));
+  }
+  // a sealed box's Fc and Qtc (for the Linkwitz transform's starting point)
+  function sealedFcQ() {
+    const d = S.design;
+    if (!d || d.type !== 'sealed') return null;
+    const dc = drvc(), p = dc.params, N = Math.max(1, d.count);
+    const qts = dc.derived.qts || p.qts, k = GL.standing.effect(d.chambers[0].stuff).k;
+    const ar = p.vas * N / (d.chambers[0].vol * k);
+    return { fc: p.fs * Math.sqrt(1 + ar), qtc: qts * Math.sqrt(1 + ar) };
+  }
   function signalFor(dc) {
     const N = S.design.count, series = S.design.wiring === 'series';
     const znomTot = series ? dc.model.znom * N : dc.model.znom / N;
     const V = S.signal.mode === 'watts' ? Math.sqrt(S.signal.watts * znomTot) : S.signal.volts;
     const per = series ? V / N : V;
     const { hp, lp } = S.signal;
-    const eg = (w) => {
-      let H = X.C(1);
-      if (hp.on) H = X.cmul(H, filterResp(w, hp, true));
-      if (lp.on) H = X.cmul(H, filterResp(w, lp, false));
-      return X.cscale(H, per);
-    };
+    const eg = (w) => X.cscale(chainH(w), per);
     return { V, per, znomTot, W: V * V / znomTot, eg };
   }
   const cabinDb = (f) => {
@@ -453,6 +480,7 @@
   // ---------------------------------------------------------------- compute
   let pending = false;
   function changed(structural) {
+    histLater();
     if (structural) { renderSide(); if (S.view && S.view !== 'response') renderMainView(); }
     if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; compute(); }); }
   }
@@ -531,6 +559,27 @@
     save();
   }
 
+  // Power compression and large-signal curves, when asked for on the Signal tab.
+  function beyondSmallSignal(out, dc, sig, freqs, field) {
+    const ls = S.signal.ls, LS = GL.largesignal;
+    const opts = { volts: sig.V, drive: sig.per, vmax: S.signal.airLimit.on ? S.signal.airLimit.v : 0, field };
+    const withModel = (m) => ({ params: dc.params, model: Object.assign({}, dc.model, m), derived: dc.derived });
+    out.hot = null; out.big = null;
+    if (ls.heat) {
+      const hc = LS.hotCoil({ re: dc.model.Re, pe: dc.model.Pe, vPer: sig.per, duty: ls.duty, rise: ls.rise, coil: ls.coil });
+      // same power rating: the limit stays at the rated volts into the cold coil
+      const d2 = withModel({ Re: hc.re, Pe: dc.model.Pe * dc.model.Re / hc.re });
+      const m2 = E.buildModel(S.design, d2, sig.eg);
+      out.hot = Object.assign(GL.sweep(m2, freqs, Object.assign({}, opts, { field: baffleField(out, m2) })), { coil: hc });
+    }
+    if (ls.big && dc.model.Xmax > 0) {
+      const fr = GL.util.logspace(S.signal.fmin, Math.min(S.signal.fmax, 2000), 60);
+      const X0 = Array.from(fr, f => GL.interp(out.res.f, out.res.xpk, f));
+      const build = (b, k) => E.buildModel(S.design, withModel({ BL: dc.model.BL * b, Cms: dc.model.Cms / k }), sig.eg);
+      const one = (m, f) => { const r = GL.sweep(m, Float64Array.of(f), Object.assign({}, opts, { field: baffleField(out, m) })); return { spl: r.spl[0], xpk: r.xpk[0] }; };
+      out.big = LS.solve(Array.from(fr), X0, dc.model.Xmax, ls.bl, ls.kms, build, one);
+    }
+  }
   function simulate() {
     const out = { warnings: [], error: null };
     try {
@@ -561,6 +610,7 @@
       const field = baffleField(out, model);
       out.res = GL.sweep(model, freqs, { volts: sig.V, drive: sig.per, vmax: S.signal.airLimit.on ? S.signal.airLimit.v : 0,
         field, angles: field ? S.baffle.angles.slice().sort((a, b) => a - b) : [] });
+      beyondSmallSignal(out, dc, sig, freqs, field);
       out.summary = summarize(out, dc);
       out.warnings = warnings(out, dc);
     } catch (e) {
@@ -925,7 +975,7 @@
     }
     const panel = document.getElementById('panel');
     panel.innerHTML = '';
-    const fn = { driver: driverPanel, enclosure: enclosurePanel, optimize: optimizePanel, compare: comparePanel, array: arrayPanel, build: buildPanel, signal: signalPanel, tools: toolsPanel }[S.tab];
+    const fn = { driver: driverPanel, enclosure: enclosurePanel, optimize: optimizePanel, compare: () => [comparePanel(), measCard()], array: arrayPanel, build: buildPanel, signal: signalPanel, tools: toolsPanel }[S.tab];
     panel.append(...[].concat(fn()));
   }
 
@@ -1271,6 +1321,8 @@
     const save = () => lib.save();
     params.push(
       uf('Outside diameter', 'len', () => d.params.dia || NaN, (v) => { d.params.dia = v; save(); }, { tip: 'Frame diameter, for the 3D view and baffle layout' }),
+      uf('Bolt circle', 'len', () => d.params.bolt || 0, (v) => { d.params.bolt = v; save(); }, { positive: false, min: 0, tip: 'Diameter of the circle the mounting screws sit on. 0 = estimate. Used for the pilot holes on the build sheet.' }),
+      nf('Mounting holes', () => d.params.holes || 0, (v) => { d.params.holes = Math.max(0, Math.round(v)); save(); }, { digits: 0, positive: false, min: 0, tip: '0 = estimate (4 below 8", 8 from 8" up)' }),
       uf('Cutout diameter', 'len', () => d.params.cutout || 0, (v) => { d.params.cutout = v; save(); }, { positive: false, min: 0, tip: 'The hole in the baffle, from the datasheet. 0 = estimate (about 88% of the outside diameter). Used on the build sheet.' }),
       uf('Mounting depth', 'len', () => d.params.depth || 0, (v) => { d.params.depth = v; save(); }, { positive: false, min: 0, tip: 'From the mounting flange to the back of the magnet. 0 = estimate from the diameter. Used to keep bent ports clear of the motor.' }));
     let dc = null;
@@ -1611,6 +1663,20 @@
     });
   }
 
+  // dropped files: measurements (by extension, or a .txt/.csv that is a table of numbers) or drivers
+  async function dropFiles(files) {
+    const meas = [], rest = [];
+    for (const f of files) {
+      if (/\.(frd|zma)$/i.test(f.name)) meas.push(f);
+      else if (/\.(txt|csv)$/i.test(f.name) && hasProject() && GL.frd.looksLike(await GL.util.readFileText(f))) meas.push(f);
+      else rest.push(f);
+    }
+    if (meas.length) {
+      if (!hasProject()) toast('Open or start a project first: measurements are kept with a project.', true);
+      else importMeasurements(meas);
+    }
+    if (rest.length) importFiles(rest);
+  }
   async function importFiles(files) {
     const done = [], bad = [];
     for (const f of files) {
@@ -1987,6 +2053,11 @@
         nf('Infill', () => (b.print || {}).infill * 100, (v) => { b.print = Object.assign({}, b.print, { infill: Math.max(0, Math.min(100, v)) / 100 }); }, { unit: '%', digits: 0, structural: false })) : null,
       uf('Thickness', 'thick', () => b.t, (v) => { b.t = v; b.material = 'custom'; }, { structural: true }),
       nf('Front baffle layers', () => b.layers, (v) => { b.layers = Math.max(1, Math.min(3, Math.round(v))); }, { digits: 0, min: 1 }),
+      sel('Joints', [['butt', 'Butt joints (the simplest)'], ['rabbet', 'Rabbets, half the thickness deep'], ['mitre', 'Mitres (45° on every edge)']], () => b.joint || 'butt', (v) => { b.joint = v; }, { structural: true }),
+      check('Terminal cup on the back', () => b.terminal && b.terminal.on, (v) => { b.terminal = Object.assign({ shape: 'square', size: 2.5 * U.IN }, b.terminal, { on: v }); }, { structural: true }),
+      b.terminal && b.terminal.on ? h('div', { class: 'grid2' },
+        sel('Cup', [['square', 'Square'], ['round', 'Round']], () => b.terminal.shape, (v) => { b.terminal.shape = v; }, { structural: true }),
+        uf('Cutout size', 'len', () => b.terminal.size, (v) => { b.terminal.size = v; }, { tip: 'The hole the cup needs (square side or round diameter): check the cup\'s datasheet' })) : null,
       n > 1 ? sel('Chambers side by side', [['W', 'Across the width'], ['H', 'Stacked (height)']], () => b.split, (v) => { b.split = v; }) : null);
 
     const dimRow = (k, name) => h('div', { class: 'dimrow' },
@@ -2036,7 +2107,7 @@
             : r.fillet ? sz(r.b) + ' × ' + sz(r.b) + ' block, ' + sz(r.a) + ' long, cove radius ' + sz(r.b)
             : sz(r.a) + ' × ' + sz(r.b) + (r.opening ? ', opening ' + sz(r.opening[0]) + ' × ' + sz(r.opening[1]) : '')))))),
         h('p', { class: 'hint' }, 'Sheet area ' + (U.system === 'imperial' ? (p.area / 0.09290304).toFixed(2) + ' ft²' : p.area.toFixed(2) + ' m²') +
-          '. Top and bottom run full size, sides fit between them, front and back fit inside. Slot panels start at the inside face of the baffle (or divider). No saw kerf included.'));
+          '. ' + jointNote() + ' Slot panels start at the inside face of the baffle (or divider). No saw kerf included.'));
     };
     fillCut();
     live.push(fillCut);
@@ -2050,7 +2121,7 @@
       }).filter(Boolean).join('\n'), 'hint pre'),
       h('p', { class: 'hint' }, 'Round ports: lengths run along the centre line of the tube, through the middle of each bend; measure elbow fittings the same way. Slots: each run is measured to the centre of the corner. Panel sizes are in the cut list.')) : null;
     const printBtn = () => btn('Print build sheet', printBuildSheet, 'btn small');
-    if (part === 'main') return [panelsCard(printBtn), sheetCard(), card('Cut list', cut, h('div', { class: 'btnrow' }, printBtn())), card('Volume breakdown', vt), panelCard(), standingCard(), portRuns].filter(Boolean);
+    if (part === 'main') return [panelsCard(printBtn), sheetCard(), cutFilesCard(), card('Cut list', cut, h('div', { class: 'btnrow' }, printBtn())), card('Volume breakdown', vt), panelCard(), standingCard(), portRuns].filter(Boolean);
     return [material, dims, h('div', { class: 'btnrow' }, btn('Open the Build sheet', () => showView('build'), 'btn small'), printBtn())];
   }
 
@@ -2072,13 +2143,21 @@
     return p;
   }
   const BS = () => GL.buildsheet;
+  // how the outer panels go together, for the notes
+  function jointNote() {
+    const j = S.box.joint || 'butt', half = U.system === 'imperial' ? GL.util.inchFraction(S.box.t / 2) : Math.round(S.box.t * 500) + ' mm';
+    if (j === 'mitre') return 'Mitred: every outer panel is its full outside size, with a 45° mitre on each edge that meets another panel.';
+    if (j === 'rabbet') return 'Rabbeted: cut rabbets ' + half + ' deep and one thickness wide along the side edges of the top and bottom, and along the front and back edges of the top, bottom and sides. The sides sit in the top and bottom; the back and front sit in all four.';
+    return 'Butt joints: the top and bottom run the full size, the sides fit between them, the front and back fit inside all four.';
+  }
   // ports that don't fit: their panels and holes on the build sheet aren't real yet
   const unfitPorts = () => R && R.plan ? [...new Set(R.plan.ports.filter(p => p.route && !p.route.fits).map(p => p.pt.name))] : [];
   const unfitText = () => { const u = unfitPorts(); return u.length ? u.join(' and ') + (u.length > 1 ? ' do' : ' does') + ' not fit in this box, so ' + (u.length > 1 ? 'their' : 'its') + ' panels and holes here are not real. Fix it on the Enclosure tab before cutting.' : ''; };
   // every panel with its cutouts (drivers, radiators, ports, slot mouths, notches, windows)
   function sheetParts() {
+    const dcut = BS().driverCutout(driver().params);
     return BS().panels({ list: cutList().list, box: S.box, plan: R && R.plan, layout: G.layout(S.design, S.box), design: S.design,
-      drvCut: BS().driverCutout(driver().params) });
+      drvCut: dcut, screws: BS().screws(driver().params, dcut.d), terminal: S.box.terminal });
   }
   // sizes to cut to: fractions of an inch, or whole millimetres
   const cutFmt = (m) => U.system === 'imperial' ? GL.util.inchFraction(m) : Math.round(m * 1000) + ' mm';
@@ -2124,7 +2203,7 @@
     const dc = BS().driverCutout(driver().params);
     return card('Panels', h('div', { class: 'btnrow' }, printBtn()), warn, grid, extra,
       h('p', { class: 'hint' }, 'Drawn to scale as you would mark them out: cutouts dashed in red and numbered, positions measured from the left and bottom edges to the centre of round holes (or the corner of square ones). ' +
-        'Top and bottom run the full size, the sides fit between them, the front, back and dividers fit inside all four.' +
+        jointNote() + ' Dividers fit inside all four walls.' +
         (dc.est ? ' The driver cutout is estimated from its size: check it against the datasheet, or enter it on the Driver tab.' : '')));
   }
   function sheetCard() {
@@ -2154,6 +2233,36 @@
       host, msg,
       h('p', { class: 'hint' }, 'A quick layout for buying material: parts in rows, the biggest first, with the kerf between them. Leave a little extra for squaring up the factory edges, and check the sheet\'s real thickness before cutting.'));
   }
+  // DXF / SVG for a CNC or laser, STL for a 3D printer
+  function cutFilesCard() {
+    const CF = GL.cutfiles, base = () => (S.name || 'GetLow').replace(/[^\w.-]+/g, '_');
+    const nested = () => BS().nest(sheetParts(), sheetCfg());
+    const txt = (ext, mime, make) => () => {
+      try { GL.util.downloadText(base() + ext, make(), mime); } catch (e) { console.error(e); toast('Could not make the file: ' + e.message, true); }
+    };
+    const stl = (ext, make) => () => {
+      try { const tris = make(); GL.util.downloadBlob(base() + ext, CF.stlBinary(tris, S.name)); toast('STL: ' + tris.length.toLocaleString() + ' triangles, in millimetres.'); }
+      catch (e) { console.error(e); toast('Could not make the STL: ' + e.message, true); }
+    };
+    const warn = h('p', { class: 'warnline' });
+    const fill = () => { warn.textContent = unfitText(); warn.hidden = !warn.textContent; };
+    live.push(fill); fill();
+    return card('Cutting files', warn,
+      h('h4', null, 'CNC router or laser cutter'),
+      h('div', { class: 'btnrow' },
+        btn('Panels (DXF)', txt('-panels.dxf', 'application/dxf', () => CF.dxfPanels(sheetParts())), 'btn small'),
+        btn('Sheet layout (DXF)', txt('-sheets.dxf', 'application/dxf', () => CF.dxfSheets(nested())), 'btn small'),
+        btn('Panels (SVG)', txt('-panels.svg', 'image/svg+xml', () => CF.svgPanels(sheetParts())), 'btn small ghost'),
+        btn('Sheet layout (SVG)', txt('-sheets.svg', 'image/svg+xml', () => CF.svgSheets(nested())), 'btn small ghost')),
+      h('p', { class: 'hint' }, 'In millimetres, on layers: OUTLINE (panel edges), CUTOUT (driver, port and other holes), PILOT (screw holes), NOTE (labels) and SHEET. Cut the holes first, then the outlines. Allow for your bit or kerf in the toolpath, not in the drawing. ' +
+        (S.box.joint && S.box.joint !== 'butt' ? 'The drawings are the panels\' outer faces: cut the ' + (S.box.joint === 'mitre' ? 'mitres' : 'rabbets') + ' separately.' : '')),
+      h('h4', null, '3D printer'),
+      h('div', { class: 'btnrow' },
+        btn('Panels laid flat (STL)', stl('-panels.stl', () => CF.stlFlat(sheetParts(), S.box.t)), 'btn small'),
+        btn('Assembled box (STL)', stl('-box.stl', () => CF.stlBox(sheetParts(), Object.assign({}, S.box, { layout: G.layout(S.design, S.box) }))), 'btn small ghost')),
+      h('p', { class: 'hint' }, 'In millimetres. "Panels laid flat" prints each piece on its side to glue up like a wooden box, the most reliable way. "Assembled box" is the shell as built (outer walls, baffle layers and dividers, with their holes) to print in one go or slice into parts; ports, braces and slot panels go in separately. For prints, set the wall thickness on the Material card to what you\'ll print.'));
+  }
+
   // A page to print (or save as PDF): the design, the cut list, every panel and the sheet layout.
   function printBuildSheet() {
     const esc = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -2205,7 +2314,7 @@
         const size = r.dowel ? 'Ø' + cutFmt(r.b) + ' × ' + cutFmt(r.a) : r.fillet ? cutFmt(r.b) + ' square block, ' + cutFmt(r.a) + ' long' : cutFmt(r.a) + ' × ' + cutFmt(r.b) + (r.opening ? ', window ' + cutFmt(r.opening[0]) + ' × ' + cutFmt(r.opening[1]) : '');
         return '<tr><td>' + esc((keys ? keys + ' · ' : '') + r.name) + '</td><td>' + r.qty + '</td><td>' + esc(size) + '</td></tr>';
       }).join('') + '</table>' +
-      '<p class="note">Top and bottom run the full size; the sides fit between them; the front baffle, back and dividers fit inside all four. No saw kerf included in the sizes.</p>' +
+      '<p class="note">' + esc(jointNote()) + ' Dividers fit inside all four walls. No saw kerf included in the sizes.</p>' +
       '<h2>Panels</h2><p class="note">To scale. Cutouts are dashed and numbered; positions are from the left and bottom edges to the centre of round holes or the corner of square ones.' +
       (dc.est ? ' The driver cutout (Ø ' + esc(cutFmt(dc.d)) + ') is estimated: check it against the driver before cutting.' : '') + '</p>' +
       '<div class="grid">' + figs + '</div>' +
@@ -2216,7 +2325,9 @@
       '<h2>Assembly</h2><table class="tick">' + [
         'Cut every panel and check them against the list before cutting any holes.',
         'Mark and cut the driver, radiator and port holes. Test-fit the drivers before gluing.',
-        'Glue the sides between the top and bottom, then fit the dividers, braces and slot panels.',
+        S.box.joint === 'mitre' ? 'Glue the mitred sides, top and bottom into a frame (band clamps help), then fit the dividers, braces and slot panels.'
+          : S.box.joint === 'rabbet' ? 'Cut the rabbets, then glue the sides into the top and bottom and fit the dividers, braces and slot panels.'
+          : 'Glue the sides between the top and bottom, then fit the dividers, braces and slot panels.',
         'Fit the back and front baffle inside the four walls. Seal every inside joint (glue fillet or caulk).',
         'Add the stuffing or lining, the terminal cup and the wiring, then mount the drivers with a gasket.',
         'Check for leaks: with the drivers in, push a cone gently. It should come back slowly in a sealed box.'].map(x => '<tr><td>☐</td><td>' + esc(x) + '</td></tr>').join('') + '</table>' +
@@ -2300,6 +2411,9 @@
         uf('Frequency', 'freq', () => s.lp.f, (v) => { s.lp.f = v; }),
         sel('Slope', SLOPES, () => String(s.lp.order), (v) => { s.lp.order = v === 'lr4' ? v : +v; }, { structural: false }),
         h('p', { class: 'hint' }, 'Like the LPF on a sub amp. It shapes every chart, and max SPL drops where it cuts.')),
+      eqCard(),
+      xoCard(),
+      lsCard(),
       card('Max SPL limits',
         h('p', { class: 'hint' }, 'Max SPL always stops at Xmax and the driver\'s power rating.'),
         check('Also stop when port or line-mouth air speed reaches', () => s.airLimit.on, (v) => { s.airLimit.on = v; }),
@@ -2317,6 +2431,277 @@
     ];
   }
 
+  // ---------------------------------------------------------------- EQ
+  function eqCard() {
+    const eq = S.signal.eq, lt = eq.lt, fc = sealedFcQ();
+    const host = h('div', { class: 'roomchart eqchart' });
+    let ch = null;
+    const draw = () => {
+      if (!host.isConnected) return;
+      if (!ch) ch = new GL.Chart(host);
+      const fr = Array.from(GL.util.logspace(Math.max(5, S.signal.fmin), Math.min(20000, Math.max(S.signal.fmax, 200)), 160));
+      const all = fr.map(f => 20 * Math.log10(X.cabs(chainH(2 * Math.PI * f))));
+      const only = fr.map(f => 20 * Math.log10(X.cabs(GL.eq.response(2 * Math.PI * f, eq))));
+      ch.set({ title: 'Signal chain', fileTitle: S.name, series: [{ name: 'Filters and EQ', color: SERIES[0], x: fr, y: all }, { name: 'EQ alone', color: 'var(--text-secondary)', x: fr, y: only, dash: '5 4' }],
+        refs: [{ y: 0, label: '0 dB' }], ylabel: 'Gain', unit: 'dB', xRange: [fr[0], fr[fr.length - 1]], digits: 1 });
+    };
+    live.push(draw);
+    requestAnimationFrame(draw);
+    const boostNote = liveText(() => {
+      if (!GL.eq.active(eq)) return 'No EQ on.';
+      const b = GL.eq.maxBoost(eq, S.signal.fmin, S.signal.fmax);
+      return b.db > 0.05 ? 'Most boost: +' + b.db.toFixed(1) + ' dB at ' + b.f.toFixed(0) + ' Hz. The amp needs ' + Math.pow(10, b.db / 10).toFixed(1) + '× the power there; max SPL and excursion include it.' : 'The EQ only cuts.';
+    }, 'hint');
+    const bandRow = (b, i) => h('div', { class: 'eqband' },
+      h('div', { class: 'grid2' },
+        check('Band ' + (i + 1), () => b.on, (v) => { b.on = v; }),
+        sel('Type', [['peak', 'Peak / dip'], ['lowshelf', 'Low shelf'], ['highshelf', 'High shelf']], () => b.type, (v) => { b.type = v; }, { structural: false }),
+        uf('Frequency', 'freq', () => b.f, (v) => { b.f = v; }),
+        uf('Gain', 'db', () => b.gain, (v) => { b.gain = Math.max(-30, Math.min(20, v)); }, { positive: false }),
+        nf('Q', () => b.q, (v) => { b.q = Math.max(0.1, Math.min(20, v)); }, { digits: 2, positive: true })),
+      h('div', { class: 'btnrow' }, btn('Remove', () => { eq.bands.splice(i, 1); changed(true); }, 'btn ghost small')));
+    return card('EQ',
+      h('h4', null, 'Linkwitz transform'),
+      h('p', { class: 'hint' }, 'Makes a sealed box behave like one with a lower Fc and a different Q, using boost from the amp: the classic way to get deep, flat bass from a small sealed sub.'),
+      check('On', () => lt.on, (v) => { lt.on = v; }),
+      h('div', { class: 'grid2' },
+        uf('Box Fc (from)', 'freq', () => lt.f0, (v) => { lt.f0 = v; }),
+        nf('Box Qtc (from)', () => lt.q0, (v) => { lt.q0 = Math.max(0.2, v); }, { digits: 2, positive: true }),
+        uf('Target Fc', 'freq', () => lt.fp, (v) => { lt.fp = v; }),
+        nf('Target Q', () => lt.qp, (v) => { lt.qp = Math.max(0.2, v); }, { digits: 3, positive: true })),
+      fc ? h('div', { class: 'btnrow' }, btn('Use this box (Fc ' + fc.fc.toFixed(1) + ' Hz, Qtc ' + fc.qtc.toFixed(2) + ')', () => { lt.f0 = +fc.fc.toFixed(1); lt.q0 = +fc.qtc.toFixed(3); changed(true); }, 'btn small')) : null,
+      h('h4', null, 'Parametric bands'),
+      ...eq.bands.map(bandRow),
+      h('div', { class: 'btnrow' }, btn('Add a band', () => { eq.bands.push({ on: true, type: 'peak', f: 50, gain: -3, q: 2 }); changed(true); }, 'btn small')),
+      boostNote,
+      host,
+      h('p', { class: 'hint' }, 'Like a DSP or a plate amp\'s EQ, ahead of the amp. Every chart follows it: a boost raises excursion and needs more power, so watch Xmax and max SPL.'));
+  }
+
+  // ---------------------------------------------------------------- power compression and large signal
+  function lsCard() {
+    const ls = S.signal.ls;
+    return card('Power compression and large signal',
+      h('p', { class: 'hint' }, 'The main curves are the small-signal model: they scale straight up with power. Real drivers don\'t. Tick these to see the difference at the drive level set above.'),
+      check('Voice coil heating (power compression)', () => ls.heat, (v) => { ls.heat = v; }, { structural: true }),
+      ls.heat ? h('div', null,
+        h('div', { class: 'grid2' },
+          sel('What you play', [['music', 'Music (about 1/8 of the amp\'s power over time)'], ['noise', 'Pink noise (about 1/2)'], ['sine', 'A steady tone (all of it)']], () => ls.duty, (v) => { ls.duty = v; }, { structural: false }),
+          sel('Voice coil wire', [['cu', 'Copper'], ['al', 'Aluminium (CCAW)']], () => ls.coil, (v) => { ls.coil = v; }, { structural: false }),
+          nf('Coil temperature rise at rated power', () => ls.rise, (v) => { ls.rise = Math.max(20, Math.min(300, v)); }, { unit: '°C', digits: 0, positive: true, tip: 'Typical: 150–200 °C for subwoofers with good venting, more for small drivers' })),
+        liveText(() => {
+          const hc = R && R.hot && R.hot.coil;
+          return hc ? 'At this drive: ' + hc.P.toFixed(1) + ' W into each coil over time, the coil runs ' + hc.dT.toFixed(0) + ' °C hotter, Re ' + drvc().model.Re.toFixed(2) + ' → ' + hc.re.toFixed(2) + ' Ω: about ' + hc.db.toFixed(1) + ' dB where the impedance is near Re, and the driver\'s Q rises.' : '';
+        }, 'hint')) : null,
+      check('BL and suspension changing with excursion', () => ls.big, (v) => { ls.big = v; }, { structural: true }),
+      ls.big ? h('div', null,
+        h('div', { class: 'grid2' },
+          nf('BL at Xmax', () => ls.bl * 100, (v) => { ls.bl = Math.max(30, Math.min(100, v)) / 100; }, { unit: '% of rest', digits: 0, positive: true }),
+          nf('Stiffness at Xmax', () => ls.kms, (v) => { ls.kms = Math.max(1, Math.min(4, v)); }, { unit: '× rest', digits: 2, positive: true })),
+        h('p', { class: 'hint' }, 'Defaults follow Klippel\'s Xmax: where BL has fallen to 82% or the suspension is a third stiffer. With a measured BL(x) or Kms(x), set them from that. Shown to 2 kHz; excursion matters most low down, where the curves bend over.'),
+        drvc().model.Xmax > 0 ? null : h('p', { class: 'warn' }, 'Needs the driver\'s Xmax.')) : null);
+  }
+
+  // ---------------------------------------------------------------- passive crossover
+  // the woofer's own figures for the whole design (count and wiring)
+  function wooferRL() {
+    const dc = drvc(), N = Math.max(1, S.design.count), ser = S.design.wiring === 'series';
+    const k = ser ? N : 1 / N;
+    return { R: R && R.sig ? R.sig.znomTot : dc.model.znom * k, re: (dc.params.re || dc.model.re || 6) * k, le: (dc.params.le || 0) * k };
+  }
+  // Networks for each way, designed for each driver's nominal load.
+  function xoNetworks() {
+    const x = S.signal.xo, XO = GL.crossover, w = wooferRL();
+    const twR = Math.max(x.tw.re * 1.15, 2), midR = Math.max(x.mid.re * 1.15, 2);
+    const three = x.ways === 3;
+    return {
+      woofer: XO.wayParts({ lp: { al: x.al, f: x.f1 }, R: w.R, zobel: x.zobel, re: w.re, le: w.le }),
+      mid: three ? XO.wayParts({ hp: { al: x.al, f: x.f1 }, lp: { al: x.al, f: x.f2 }, R: midR, pad: x.mid.pad }) : null,
+      tweeter: XO.wayParts({ hp: { al: x.al, f: three ? x.f2 : x.f1 }, R: twR, pad: x.tw.pad }),
+    };
+  }
+  // SPL of each way and of the sum, and the amp's load, on the design's frequencies
+  let xoCache = null;
+  function xoCurves() {
+    if (!R || !R.res || !S.signal.xo.on) return null;
+    const key = R.res;
+    if (xoCache && xoCache.key === key && xoCache.state === JSON.stringify(S.signal.xo)) return xoCache.out;
+    const x = S.signal.xo, XO = GL.crossover, res = R.res, nets = xoNetworks();
+    const V = R.sig.V, f = Array.from(res.f), n = f.length;
+    const tw = XO.smallDriver(x.tw), mid = x.ways === 3 ? XO.smallDriver(x.mid) : null;
+    const out = { f, w: new Array(n), t: new Array(n), m: mid ? new Array(n) : null, sum: new Array(n), z: new Array(n), nets };
+    const db = (p) => 20 * Math.log10(Math.max(1e-12, X.cabs(p)) / 20e-6);
+    const par = (a, b) => X.cdiv(X.cmul(a, b), X.cadd(a, b));
+    for (let i = 0; i < n; i++) {
+      const wv = 2 * Math.PI * f[i];
+      // woofer: the simulated design (its pressure and impedance), through its network
+      const zW = X.C(res.zmag[i] * Math.cos(res.zph[i] * Math.PI / 180), res.zmag[i] * Math.sin(res.zph[i] * Math.PI / 180));
+      const amp = 20e-6 * Math.pow(10, res.spl[i] / 20), lag = -wv * (x.offset || 0) / GL.phys.c;
+      const pW0 = X.C(amp * Math.cos(res.phase[i] + lag), amp * Math.sin(res.phase[i] + lag));
+      const sw = XO.solve(nets.woofer, zW, wv);
+      const pW = X.cmul(pW0, sw.H);
+      const st = XO.solve(nets.tweeter, tw.z(wv), wv);
+      const pT = X.cscale(X.cmul(tw.p(wv), st.H), V * (x.tw.invert ? -1 : 1));
+      let pS = X.cadd(pW, pT), zin = par(sw.Zin, st.Zin);
+      if (mid) {
+        const sm = XO.solve(nets.mid, mid.z(wv), wv);
+        const pM = X.cscale(X.cmul(mid.p(wv), sm.H), V * (x.mid.invert ? -1 : 1));
+        out.m[i] = db(pM);
+        pS = X.cadd(pS, pM);
+        zin = par(zin, sm.Zin);
+      }
+      out.w[i] = db(pW); out.t[i] = db(pT); out.sum[i] = db(pS); out.z[i] = X.cabs(zin);
+    }
+    xoCache = { key, state: JSON.stringify(x), out };
+    return out;
+  }
+  function xoCard() {
+    const x = S.signal.xo, XO = GL.crossover;
+    const small = (t, label) => [
+      h('h4', null, label),
+      h('div', { class: 'grid2' },
+        uf('Sensitivity (2.83 V, 1 m)', 'db', () => t.sens, (v) => { t.sens = v; }, { positive: false }),
+        uf('Fs (in its chamber)', 'freq', () => t.fs, (v) => { t.fs = v; }),
+        nf('Qts (in its chamber)', () => t.qts, (v) => { t.qts = Math.max(0.2, v); }, { digits: 2, positive: true }),
+        nf('Re', () => t.re, (v) => { t.re = Math.max(0.5, v); }, { unit: 'Ω', digits: 2, positive: true }),
+        nf('Le', () => t.le * 1000, (v) => { t.le = Math.max(0, v) / 1000; }, { unit: 'mH', digits: 3, positive: false }),
+        nf('Impedance peak', () => t.zmax, (v) => { t.zmax = Math.max(t.re * 1.2, v); }, { unit: 'Ω', digits: 1, positive: true }),
+        uf('Level cut (L-pad)', 'db', () => t.pad, (v) => { t.pad = Math.max(0, Math.min(20, v)); }, { positive: false }),
+        check('Wired reversed', () => t.invert, (v) => { t.invert = v; }))];
+    const parts = h('div', { class: 'voltable' });
+    const fmtPart = (p) => {
+      const v = p.type === 'L' ? (p.value * 1000).toFixed(3) + ' mH' : p.type === 'C' ? (p.value * 1e6).toFixed(2) + ' µF' : p.type === 'R' ? p.value.toFixed(2) + ' Ω' : p.value.toFixed(2) + ' Ω + ' + (p.c * 1e6).toFixed(2) + ' µF';
+      const p2 = (v) => String(+v.toPrecision(2));
+      const near = p.type === 'L' ? p2(XO.nearest(p.value * 1000, XO.E24)) + ' mH' : p.type === 'C' ? p2(XO.nearest(p.value * 1e6)) + ' µF' : p.type === 'R' ? p2(XO.nearest(p.value)) + ' Ω' : p2(XO.nearest(p.value)) + ' Ω + ' + p2(XO.nearest(p.c * 1e6)) + ' µF';
+      return [p.role || { L: 'Coil', C: 'Capacitor', R: 'Resistor', RC: 'Zobel' }[p.type], p.at === 'series' ? 'in series' : 'across', v, near];
+    };
+    const fill = () => {
+      parts.innerHTML = '';
+      if (!x.on || !R || !R.res) return;
+      const nets = xoNetworks(), xo = xoCurves();
+      const rows = [];
+      for (const [name, net] of [['Woofer', nets.woofer], ['Mid', nets.mid], ['Tweeter', nets.tweeter]]) {
+        if (!net) continue;
+        rows.push(h('tr', null, h('th', { colspan: 4 }, name + ' (amp side first)')));
+        net.forEach(p => { const r = fmtPart(p); rows.push(h('tr', null, h('td', null, r[0]), h('td', null, r[1]), h('td', null, r[2]), h('td', null, r[3]))); });
+      }
+      const zmin = xo ? Math.min(...xo.z.filter(isFinite)) : 0;
+      parts.append(h('table', null, h('thead', null, h('tr', null, h('th', null, 'Part'), h('th', null, 'Where'), h('th', null, 'Value'), h('th', null, 'Nearest stock value'))), h('tbody', null, rows)),
+        h('p', { class: 'hint' }, 'The amp sees as little as ' + zmin.toFixed(1) + ' Ω. Parts are designed for each driver\'s nominal load, then the response is simulated with its real impedance. Use air-core coils with low resistance and film capacitors; a coil\'s own resistance lowers that way\'s level a little.'));
+    };
+    live.push(fill); fill();
+    return card('Passive crossover',
+      h('p', { class: 'hint' }, 'For 2- and 3-way speakers: the design\'s driver is the woofer; give the tweeter (and mid) a few figures from their datasheets. The SPL chart shows each way through its network and the sum; the impedance chart shows what the amp sees.'),
+      check('On', () => x.on, (v) => { x.on = v; if (v && S.signal.fmax < 20000) S.signal.fmax = 20000; }, { structural: true }),
+      x.on ? h('div', null,
+        h('div', { class: 'grid2' },
+          sel('Ways', [['2', '2-way'], ['3', '3-way']], () => String(x.ways), (v) => { x.ways = +v; }, { structural: true }),
+          sel('Slopes', XO.ALIGN, () => x.al, (v) => { x.al = v; }, { structural: false }),
+          uf(x.ways === 3 ? 'Woofer to mid' : 'Crossover', 'freq', () => x.f1, (v) => { x.f1 = v; }),
+          x.ways === 3 ? uf('Mid to tweeter', 'freq', () => x.f2, (v) => { x.f2 = Math.max(v, x.f1 * 1.5); }) : null,
+          check('Zobel on the woofer', () => x.zobel, (v) => { x.zobel = v; }),
+          uf('Woofer sits behind the tweeter', 'len', () => x.offset, (v) => { x.offset = Math.max(0, v); }, { positive: false, tip: 'Acoustic centre: about the depth of the cone at its middle, on a flat baffle' })),
+        h('p', { class: 'hint' }, x.al === 'lr2' || x.al === 'bw2' ? 'Second-order slopes usually need the tweeter wired reversed to sum flat: try it both ways.' : x.al === 'bw3' ? 'Third-order: the two ways are 90° apart at the crossover in either polarity; listen for which sounds better.' : ''),
+        ...(x.ways === 3 ? small(x.mid, 'Mid') : []),
+        ...small(x.tw, 'Tweeter'),
+        h('h4', null, 'Parts'),
+        parts) : null);
+  }
+
+  // ---------------------------------------------------------------- your data
+  // Projects and drivers live in this browser's storage. One file holds all of
+  // them; restoring only adds (nothing is replaced or deleted).
+  function backupData() {
+    const projs = projects.map(p => p.id === activeId ? projectJson() : JSON.parse(p.text));
+    return { getlow: 'backup', version: 1, saved: new Date().toISOString(), app: GL.VERSION || '',
+      projects: projs, drivers: DRV.library.list.filter(d => !d.sample), units: S.units };
+  }
+  function backupAll() {
+    const o = backupData();
+    GL.util.downloadText('getlow-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(o), 'application/json');
+    try { localStorage.setItem('getlow.lastBackup', new Date().toISOString()); } catch (e) { /* blocked */ }
+    toast('Backed up ' + o.projects.length + (o.projects.length === 1 ? ' project' : ' projects') + ' and ' + o.drivers.length + (o.drivers.length === 1 ? ' driver.' : ' drivers.'));
+    if (S.tab === 'tools') renderSide();
+  }
+  function restoreBackup(o) {
+    let nd = 0, np = 0;
+    for (const d of o.drivers || []) {
+      if (!d || !d.id || !d.params || DRV.library.get(d.id)) continue;
+      DRV.library.list.push(d); nd++;
+    }
+    DRV.library.save();
+    const had = !!activeProj();
+    for (const p of o.projects || []) {
+      if (!p || !p.state || !p.state.design) continue;
+      addProject(p, { select: false }); np++;
+    }
+    if (!had && projects.length) selectProject(projects[0].id, true);
+    else { renderProjectTabs(); renderSide(); }
+    saveWorkspace();
+    toast('Restored ' + np + (np === 1 ? ' project' : ' projects') + ' (as new tabs) and ' + nd + (nd === 1 ? ' driver' : ' drivers') + ' not already in your library.');
+  }
+  // ask the browser to keep GetLow's storage when space runs low (installed apps usually get it)
+  async function keepStorage() {
+    try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch (e) { /* not offered */ }
+  }
+  async function storageNote() {
+    const bits = [];
+    try {
+      if (navigator.storage && navigator.storage.persisted) bits.push(await navigator.storage.persisted()
+        ? 'This browser has agreed to keep GetLow\'s storage.'
+        : 'This browser may clear GetLow\'s storage if space runs low or you clear browsing data.');
+    } catch (e) { /* unknown */ }
+    let last = null;
+    try { last = localStorage.getItem('getlow.lastBackup'); } catch (e) { /* blocked */ }
+    bits.push(last ? 'Last backup ' + new Date(last).toLocaleDateString() + '.' : 'No backup made from this browser yet.');
+    return bits.join(' ');
+  }
+  function dataCard() {
+    const note = h('p', { class: 'hint' });
+    storageNote().then(t => { note.textContent = t; });
+    const pick = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: async () => {
+      const f = pick.files[0];
+      pick.value = '';
+      if (!f) return;
+      try {
+        const o = JSON.parse(await GL.util.readFileText(f));
+        if (!o || o.getlow !== 'backup') throw new Error('not a GetLow backup');
+        restoreBackup(o);
+      } catch (e) { toast('Could not restore ' + f.name + ': ' + e.message, true); }
+    } });
+    return card('Your data',
+      h('p', { class: 'hint' }, 'Projects and your driver library are kept in this browser only. Back them up to a file now and then, and to move them to another computer or browser.'),
+      h('div', { class: 'btnrow' }, btn('Back up everything', backupAll, 'btn'), btn('Restore from a backup…', () => pick.click(), 'btn ghost'), pick),
+      note,
+      h('p', { class: 'hint' }, 'Restoring adds the backup\'s projects as new tabs and any drivers you don\'t already have. Nothing is replaced or deleted.'));
+  }
+
+  // ---------------------------------------------------------------- about and what's new
+  function aboutDialog(onlyNew) {
+    const dlg = document.getElementById('aboutdlg');
+    let seen = null;
+    try { seen = localStorage.getItem('getlow.seenVersion'); } catch (e) { /* blocked */ }
+    const list = onlyNew ? GL.CHANGES.filter(c => !seen || cmpVer(c.v, seen) > 0) : GL.CHANGES;
+    dlg.innerHTML = '';
+    dlg.append(
+      h('div', { class: 'dlg-head' }, h('h3', null, onlyNew ? 'What\'s new in GetLow ' + GL.VERSION : 'GetLow ' + GL.VERSION),
+        h('button', { class: 'btn ghost small', onclick: () => dlg.close() }, 'Close')),
+      onlyNew ? null : h('p', { class: 'hint' }, 'Subwoofer and speaker enclosure design. Free and open source (MIT licence). Driver data from OpenISD (MIT) and the makers\' published specifications.'),
+      ...list.map(c => h('div', { class: 'changes' }, h('h4', null, c.v + (c.date ? ' · ' + new Date(c.date + 'T12:00').toLocaleDateString() : '')),
+        h('ul', null, c.items.map(t => h('li', null, t))))));
+    try { localStorage.setItem('getlow.seenVersion', GL.VERSION); } catch (e) { /* blocked */ }
+    dlg.showModal();
+  }
+  const cmpVer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
+  // once after an update (not on a first visit: nothing is new then)
+  function newsAfterUpdate() {
+    let seen = null;
+    try { seen = localStorage.getItem('getlow.seenVersion'); } catch (e) { return; }
+    const used = (() => { try { return !!localStorage.getItem(WKEY); } catch (e) { return false; } })();
+    if (!seen && !used) { try { localStorage.setItem('getlow.seenVersion', GL.VERSION); } catch (e) { /* blocked */ } return; }
+    if (!seen || cmpVer(GL.VERSION, seen) > 0) aboutDialog(true);
+  }
+
   function toolsPanel() {
     const t = S.tools.pipe;
     const speed = () => 331.3 * Math.sqrt(1 + t.tempC / 273.15);
@@ -2326,7 +2711,7 @@
     const tempField = U.system === 'imperial'
       ? field('Air temperature', '°F', (c) => c * 9 / 5 + 32, (f) => (f - 32) * 5 / 9, 0, () => t.tempC, (v) => { t.tempC = v; })
       : field('Air temperature', '°C', (c) => c, (c) => c, 0, () => t.tempC, (v) => { t.tempC = v; });
-    return [roomCard(), measureCard(), card('Pipe resonance calculator',
+    return [dataCard(), roomCard(), measureCard(), card('Pipe resonance calculator',
       sel('Pipe ends', [['co', 'One end closed (quarter-wave)'], ['oo', 'Both ends open (half-wave)']], () => t.ends, (v) => { t.ends = v; }),
       uf('Length', 'len', () => t.len, (v) => { t.len = v; }),
       uf('Inside diameter', 'len', () => t.d, (v) => { t.d = v; }),
@@ -2631,6 +3016,29 @@
       const y = it.show && it.data && it.data[c.id];
       if (y) series.push(Object.assign({ name: it.name, x: it.f, y }, savedLook(it)));
     }
+    if (R.hot && (c.id === 'spl' || c.id === 'max' || c.id === 'exc' || c.id === 'imp')) {
+      const y = seriesData(R.hot, c.id);
+      series.push({ name: 'Voice coil hot (+' + R.hot.coil.dT.toFixed(0) + ' °C)', color: 'var(--warn)', x: R.hot.f, y, dash: '4 3' });
+    }
+    if (R.big && (c.id === 'spl' || c.id === 'exc')) {
+      const y = c.id === 'spl' ? R.big.spl.map((v, j) => v + cabinDb(R.big.f[j])) : R.big.xpk;
+      series.push({ name: 'Large signal (BL and suspension changing)', color: 'var(--series-4)', x: R.big.f, y, dash: '8 3' });
+    }
+    if ((c.id === 'spl' || c.id === 'imp') && S.signal.xo.on) {
+      const xo = xoCurves();
+      if (xo && c.id === 'spl') {
+        const cab = (arr) => arr.map((v, j) => v + cabinDb(xo.f[j]));
+        series.push({ name: 'With crossover: woofer', color: 'var(--series-2)', x: xo.f, y: cab(xo.w), dash: '6 3' });
+        if (xo.m) series.push({ name: 'With crossover: mid', color: 'var(--series-4)', x: xo.f, y: cab(xo.m), dash: '6 3' });
+        series.push({ name: 'With crossover: tweeter', color: 'var(--series-3)', x: xo.f, y: cab(xo.t), dash: '6 3' });
+        series.push({ name: 'With crossover: all together', color: 'var(--text-primary)', x: xo.f, y: cab(xo.sum), dash: '' });
+      }
+      if (xo && c.id === 'imp') series.push({ name: 'With crossover: what the amp sees', color: 'var(--text-primary)', x: xo.f, y: xo.z, dash: '' });
+    }
+    (S.meas || []).forEach((m, i) => {
+      if (!m.show || (c.id === 'spl' ? m.kind !== 'frd' : c.id === 'imp' ? m.kind !== 'zma' : true)) return;
+      series.push({ name: m.name + ' (measured)', color: measColor(i), x: m.f, y: m.kind === 'frd' ? m.y.map(v => v + (m.offset || 0)) : m.y, dash: '1 3' });
+    });
     if (matchRes) matchRes.rows.forEach((r, i) => {
       const y = r.show && r.res ? seriesData(r.res, c.id) : null;
       if (y) series.push(Object.assign({ name: '#' + (i + 1) + ' ' + r.entry.name, x: r.res.f, y }, matchLook(i)));
@@ -2666,7 +3074,7 @@
       if (res.portVel.length > 1) res.portVel.forEach((p, i) => extra(p.label, Array.from(p.v), ['5 4', '2 3', '8 3 2 3'][i % 3]));
       res.portVel.forEach((p, i) => extra(p.label + ' at full power', Array.from(p.full), ['6 3', '3 3', '9 3 2 3'][i % 3]));
     }
-    chart.set({ series, refs, ylabel: c.ylabel, unit: c.unit, span: c.span, zero: c.zero, xRange: [S.signal.fmin, S.signal.fmax], digits: c.id === 'imp' ? 2 : 1 });
+    chart.set({ series, refs, title: c.title || c.label || c.ylabel, fileTitle: S.name, ylabel: c.ylabel, unit: c.unit, span: c.span, zero: c.zero, xRange: [S.signal.fmin, S.signal.fmax], digits: c.id === 'imp' ? 2 : 1 });
     document.getElementById('contrib').style.display = c.id === 'spl' && res.contrib.length > 1 ? '' : 'none';
   }
 
@@ -3018,7 +3426,7 @@
   function bandColours(n) {
     const cs = getComputedStyle(document.documentElement);
     const hex = (v, d) => { const m = (cs.getPropertyValue(v).trim() || d).match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i); return m ? [1, 2, 3].map(i => parseInt(m[i], 16)) : [128, 128, 128]; };
-    const a = hex('--accent', '#2a78d6'), b = hex('--surface-1', '#fcfcfb');
+    const a = hex('--series-1', '#2a78d6'), b = hex('--surface-1', '#fcfcfb');
     return Array.from({ length: n }, (_, i) => { const t = 1 - i / n; return 'rgb(' + a.map((v, j) => Math.round(b[j] + (v - b[j]) * t)).join(',') + ')'; });
   }
 
@@ -3880,6 +4288,57 @@
     else toast('No designs found' + (bad.length ? ' in ' + bad.join(', ') : '') + '.', true);
   }
 
+  // ---------------------------------------------------------------- measurements
+  const measColor = (i) => ['var(--series-2)', 'var(--series-3)', 'var(--series-4)', 'var(--text-primary)'][i % 4];
+  async function importMeasurements(files) {
+    const done = [];
+    for (const f of files) {
+      try {
+        const m = GL.frd.parse(f.name, await GL.util.readFileText(f));
+        S.meas.push(Object.assign({ id: GL.util.uid('ms'), name: f.name.replace(/\.(frd|zma|txt|csv)$/i, ''), show: true, offset: 0 }, m));
+        done.push(f.name + ' (' + (m.kind === 'zma' ? 'impedance' : 'response') + ', ' + m.points + ' points)');
+      } catch (e) { toast('Could not read ' + f.name + ': ' + e.message, true); }
+    }
+    if (!done.length) return;
+    // show it where it belongs
+    const last = S.meas[S.meas.length - 1];
+    S.chart = last.kind === 'zma' ? 'imp' : 'spl';
+    toast('Imported ' + done.join(', ') + '.');
+    changed(true);
+    if (typeof renderChartTabs === 'function') renderChartTabs();
+    drawChart();
+  }
+  function measCard() {
+    const pick = h('input', { type: 'file', multiple: true, accept: '.frd,.zma,.txt,.csv', hidden: true, onchange: () => { importMeasurements(Array.from(pick.files)); pick.value = ''; } });
+    const list = h('div', { class: 'savedlist' });
+    S.meas.forEach((m, i) => {
+      const cb = h('input', { type: 'checkbox', 'aria-label': 'Show ' + m.name });
+      cb.checked = !!m.show;
+      cb.onchange = () => { m.show = cb.checked; changed(); drawChart(); };
+      const nm = h('input', { type: 'text', class: 'txt', value: m.name, 'aria-label': 'Name' });
+      nm.onchange = () => { m.name = nm.value.trim() || m.name; changed(); drawChart(); };
+      const range = m.f[0].toFixed(0) + '–' + (m.f[m.f.length - 1] >= 1000 ? (m.f[m.f.length - 1] / 1000).toFixed(1) + 'k' : m.f[m.f.length - 1].toFixed(0)) + ' Hz';
+      list.append(h('div', { class: 'saved' },
+        h('div', { class: 'savedtop' }, cb, lineSwatch({ color: measColor(i), dash: '1 3' }), nm),
+        h('div', { class: 'grid2' },
+          sel('Kind', [['frd', 'Response (SPL chart)'], ['zma', 'Impedance (impedance chart)']], () => m.kind, (v) => { m.kind = v; drawChart(); }, { structural: true }),
+          m.kind === 'frd' ? nf('Level offset', () => m.offset || 0, (v) => { m.offset = v; }, { unit: 'dB', digits: 1, positive: false }) : null),
+        h('div', { class: 'hint' }, range + (m.ph ? ' · with phase' : '') + ' · ' + m.f.length + ' points kept'),
+        h('div', { class: 'btnrow' },
+          m.kind === 'frd' && R && R.res ? btn('Match level to the simulation', () => {
+            const top = Math.min(S.signal.fmax, playTop());
+            m.offset = +GL.frd.matchOffset({ f: m.f, y: m.y }, Array.from(R.res.f), seriesData(R.res, 'spl'), Math.max(S.signal.fmin, (f3(R.res, R).low || S.signal.fmin) * 1.5), top).toFixed(1);
+            changed(true); drawChart();
+          }, 'btn small') : null,
+          btn('Delete', () => { S.meas.splice(i, 1); changed(true); drawChart(); }, 'btn small ghost'))));
+    });
+    return card('Measurements',
+      h('p', { class: 'hint' }, 'Put a real measurement next to the simulation: .frd (response) or .zma (impedance) files from REW, ARTA, DATS, LIMP and others, or any text file of frequency, value and phase. Drop them on the window or:'),
+      h('div', { class: 'btnrow' }, btn('Import measurements…', () => pick.click(), 'btn'), pick),
+      S.meas.length ? list : h('p', { class: 'hint' }, 'None yet.'),
+      h('p', { class: 'hint' }, 'A measurement is rarely at 1 m and 2.83 V like the simulation: "Match level" lines them up over the band the speaker plays, so you can compare the shapes. Measurements near the floor or in a room add reflections the simulation doesn\'t have. They\'re saved in the project.'));
+  }
+
   function comparePanel() {
     const nameIn = h('input', { type: 'text', class: 'txt', placeholder: R && R.res ? designName() : 'Name', 'aria-label': 'Name for the saved design' });
     const list = h('div', { class: 'savedlist' });
@@ -3982,12 +4441,7 @@
     const zf = GL.match.filterByImpedance(sized, o, S.design.count, S.design.wiring);
     const pool = zf.list;
     const sig = S.signal;
-    const filter = (w) => {
-      let H = X.C(1);
-      if (sig.hp.on) H = X.cmul(H, filterResp(w, sig.hp, true));
-      if (sig.lp.on) H = X.cmul(H, filterResp(w, sig.lp, false));
-      return H;
-    };
+    const filter = (w) => chainH(w, sig);
     const t0 = performance.now();
     try {
       const res = await GL.match.run({
@@ -4128,6 +4582,7 @@
       for (const f of Array.from(open.files)) {
         try {
           const o = JSON.parse(await GL.util.readFileText(f));
+          if (o && o.getlow === 'backup') { restoreBackup(o); continue; }
           if (!o || !o.state || !o.state.design) throw new Error('not a GetLow project');
           addProject(o);
           toast('Opened ' + S.name);
@@ -4157,7 +4612,7 @@
     window.addEventListener('drop', (e) => {
       e.preventDefault();
       document.body.classList.remove('dropping');
-      if (e.dataTransfer.files.length) importFiles(e.dataTransfer.files);
+      if (e.dataTransfer.files.length) dropFiles(Array.from(e.dataTransfer.files));
     });
   }
 
@@ -4166,16 +4621,115 @@
     const none = !hasProject();
     document.body.classList.toggle('noproj', none);
     document.getElementById('welcome').hidden = !none;
-    if (none) { R = null; return; }
+    if (none) storageNote().then(t => { document.getElementById('wstore').textContent = t; });
+    if (none) { R = null; histReset(); return; }
+    const fresh = hist.owner !== activeId;
     document.getElementById('units').value = S.units;
     renderSide();
     renderMainView();
     compute();
+    // start the history after the first solve (it may settle the box or ports)
+    if (fresh) histReset();
+  }
+
+  // ---------------------------------------------------------------- undo and redo
+  // Snapshots of the project (everything but which tab and view you're looking
+  // at), taken a moment after each change so a burst of typing is one step.
+  const hist = { owner: undefined, stack: [], i: -1, timer: 0, restoring: false };
+  const VIEW_KEYS = ['tab', 'view', 'sub'];
+  const snap = () => JSON.stringify(S, (k, v) => VIEW_KEYS.includes(k) ? undefined : v);
+  function histReset() {
+    clearTimeout(hist.timer); hist.timer = 0;
+    hist.owner = activeId;
+    hist.stack = hasProject() ? [snap()] : [];
+    hist.i = hist.stack.length - 1;
+    histButtons();
+  }
+  function histRecord() {
+    clearTimeout(hist.timer); hist.timer = 0;
+    if (hist.restoring || !hasProject() || hist.owner !== activeId) return;
+    const s = snap();
+    if (s === hist.stack[hist.i]) return;
+    hist.stack = hist.stack.slice(0, hist.i + 1);
+    hist.stack.push(s);
+    if (hist.stack.length > 100) hist.stack.shift();
+    hist.i = hist.stack.length - 1;
+    histButtons();
+  }
+  function histLater() {
+    if (hist.restoring) return;
+    clearTimeout(hist.timer);
+    hist.timer = setTimeout(histRecord, 500);
+  }
+  function histGo(step) {
+    if (hist.timer) histRecord();          // a change still waiting counts as a step
+    const j = hist.i + step;
+    if (j < 0 || j >= hist.stack.length) return;
+    hist.i = j;
+    const keep = { tab: S.tab, view: S.view, sub: S.sub };
+    hist.restoring = true;
+    try {
+      loadProject({ state: Object.assign(JSON.parse(hist.stack[j]), keep) });
+      document.getElementById('units').value = S.units;
+      renderProjectTabs();
+      renderSide();
+      renderMainView();
+      compute();
+    } finally { hist.restoring = false; }
+    histButtons();
+    saveWorkspace();
+  }
+  function histButtons() {
+    const u = document.getElementById('undo'), r = document.getElementById('redo');
+    if (u) u.disabled = hist.i <= 0;
+    if (r) r.disabled = hist.i >= hist.stack.length - 1;
+  }
+  function bindHistory() {
+    document.getElementById('undo').onclick = () => histGo(-1);
+    document.getElementById('redo').onclick = () => histGo(1);
+    document.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      // inside a text box the browser's own undo works on the text
+      const t = e.target;
+      if (t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button'].includes(t.type)) || t.isContentEditable)) return;
+      if (document.querySelector('dialog[open], .bs-overlay')) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); histGo(-1); }
+      else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); histGo(1); }
+    });
   }
 
   // ---------------------------------------------------------------- boot
+  // The splash: real progress while GetLow starts, gone as soon as it's ready
+  // (at least a moment, so it doesn't flash), or on a click or a key.
+  const splash = (() => {
+    const el = document.getElementById('splash');
+    if (!el) return { step() {}, done() {} };
+    const t0 = performance.now(), fill = document.getElementById('splash-fill'), msg = document.getElementById('splash-msg');
+    const quick = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let gone = false;
+    const hide = () => {
+      if (gone) return;
+      gone = true;
+      el.classList.add('out');
+      setTimeout(() => el.remove(), quick ? 0 : 450);
+    };
+    el.addEventListener('click', hide);
+    window.addEventListener('keydown', hide, { once: true });
+    return {
+      step(pct, text) { if (fill) fill.style.width = pct + '%'; if (msg && text) msg.textContent = text; },
+      done() {
+        this.step(100, 'Ready');
+        const wait = Math.max(0, (quick ? 300 : 1100) - (performance.now() - t0));
+        setTimeout(hide, wait);
+      },
+    };
+  })();
+  splash.step(35, 'Loading your drivers…');
+
   function boot() {
     DRV.library.load();
+    splash.step(55, 'Opening your projects…');
     // a usable state underneath, even with no project open
     S.driverId = (DRV.library.get('sample-grs-8sw-4he') || DRV.library.list[0]).id;
     newDesign('ported');
@@ -4200,9 +4754,16 @@
     chart = new GL.Chart(document.getElementById('chart'));
     view = new GL.BoxView(document.getElementById('view3d'));
     bindTop();
+    splash.step(80, 'Simulating…');
     renderAll();
     bindImport();
+    bindHistory();
     offline();
+    keepStorage();
+    document.getElementById('ver').textContent = GL.VERSION;
+    document.getElementById('brand').onclick = () => aboutDialog(false);
+    splash.done();
+    newsAfterUpdate();
   }
 
   // Installed (or visited) from a web address: keep a copy for offline use, and

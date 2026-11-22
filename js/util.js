@@ -88,6 +88,14 @@ window.GL = window.GL || {};
 
   function uid(prefix) { return (prefix || 'id') + Math.random().toString(36).slice(2, 9); }
 
+  function downloadBlob(name, blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
   function downloadText(name, text, mime) {
     const blob = new Blob([text], { type: mime || 'text/plain' });
     const a = document.createElement('a');
@@ -115,5 +123,5 @@ window.GL = window.GL || {};
   }
 
   GL.units = units;
-  GL.util = { h, fmtNum, inchFraction, uid, downloadText, readFileText, logspace };
+  GL.util = { h, fmtNum, inchFraction, uid, downloadText, downloadBlob, readFileText, logspace };
 })(window.GL);

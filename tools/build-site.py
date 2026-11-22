@@ -17,8 +17,8 @@ OUT = os.path.join(ROOT, 'build', 'getlow')
 ZIP = os.path.join(ROOT, 'build', 'getlow-site.zip')
 
 # what the app needs, relative to the project folder
-FILES = ['index.html', 'manifest.json', 'css/style.css', 'data/catalogue.js', 'data/OPENISD-LICENSE.txt']
-DIRS = [('js', '.js'), ('appicons', '')]  # not icons/: Apache keeps /icons/ for its own
+FILES = ['index.html', 'manifest.json', 'LICENSE', 'css/style.css', 'data/catalogue.js', 'data/OPENISD-LICENSE.txt']
+DIRS = [('js', '.js'), ('appicons', ''), ('art', '.webp')]  # not icons/: Apache keeps /icons/ for its own
 PE = 'data/catalogue-pe.js'
 
 HTACCESS = """# GetLow: always check for a new version of these (the offline copy handles the rest)

@@ -34,6 +34,8 @@
   function defaultBox() {
     return {
       material: 'ply12', t: 0.5 * IN, layers: 1, split: 'W', sub: 'ply',
+      joint: 'butt',                              // butt, rabbet (half the thickness) or mitre
+      terminal: { on: true, shape: 'square', size: 2.5 * IN },   // terminal cup on the back
       print: { skin: 0.0012, infill: 0.25 },    // 3D prints: solid perimeters on each face, infill fraction
       ext: { W: 16 * IN, H: 14 * IN, D: 14 * IN },
       lock: { W: false, H: false, D: false },
@@ -210,17 +212,26 @@
     for (const k of KEYS) box.ext[k] = ratio[k] * s + box.t * walls(box, k, n);
   }
 
-  // Panel list. Convention: top & bottom run full width and depth, sides fit
-  // between them, front baffle(s) and back fit inside all four.
+  // Panel list. Butt joints: top & bottom run full width and depth, sides fit
+  // between them, front baffle(s) and back fit inside all four. Rabbets (half
+  // the thickness deep) add half a thickness wherever a panel sits in one;
+  // mitres make every outer panel its full outside size. The inside is the same
+  // whichever joint, so volumes don't change. Extra baffle layers sit inside.
   function panels(design, box, n, chambers) {
     const { W, H, D } = box.ext, t = box.t;
     const intD = D - t * (1 + box.layers);
+    const j = box.joint || 'butt', e = j === 'rabbet' ? t / 2 : j === 'mitre' ? t : 0;
     const list = [
       { name: 'Top / bottom', qty: 2, a: W, b: D },
-      { name: 'Sides', qty: 2, a: H - 2 * t, b: D },
-      { name: 'Back', qty: 1, a: W - 2 * t, b: H - 2 * t },
-      { name: box.layers > 1 ? 'Front baffle (layered)' : 'Front baffle', qty: box.layers, a: W - 2 * t, b: H - 2 * t },
+      { name: 'Sides', qty: 2, a: H - 2 * t + 2 * e, b: D },
+      { name: 'Back', qty: 1, a: W - 2 * t + 2 * e, b: H - 2 * t + 2 * e },
     ];
+    if (box.layers > 1 && e > 0) {
+      list.push({ name: 'Front baffle (outer layer)', qty: 1, a: W - 2 * t + 2 * e, b: H - 2 * t + 2 * e });
+      list.push({ name: 'Front baffle (inner layers)', qty: box.layers - 1, a: W - 2 * t, b: H - 2 * t });
+    } else {
+      list.push({ name: box.layers > 1 ? 'Front baffle (layered)' : 'Front baffle', qty: box.layers, a: W - 2 * t + 2 * e, b: H - 2 * t + 2 * e });
+    }
     if (n > 1) {
       list.push(box.split === 'W'
         ? { name: 'Divider', qty: n - 1, a: H - 2 * t, b: intD }

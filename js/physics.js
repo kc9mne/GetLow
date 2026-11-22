@@ -419,7 +419,8 @@
       // With opts.drive (unfiltered volts per driver) the amp is capped at the
       // driver's rated power before the filters, so filters lower max SPL
       // where they cut instead of being "turned up" to compensate.
-      let scale = vTherm / Math.max(1e-12, opts.drive || cabs(s.Eg));
+      // (and a boost (EQ) needs more than that: the larger of the two)
+      let scale = vTherm / Math.max(1e-12, opts.drive ? Math.max(opts.drive, cabs(s.Eg)) : cabs(s.Eg));
       if (d.Xmax > 0) scale = Math.min(scale, d.Xmax / Math.max(1e-15, xpk));
       model.prs.forEach((pr, j) => {
         const x = Math.SQRT2 * cabs(pr.el.excursion(w, p));

@@ -14,22 +14,26 @@ import math, os, struct, zlib
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(HERE, 'appicons')
 
-BG = (13, 13, 13)          # --page (dark)
-TILE = (26, 26, 25)        # --surface-1 (dark)
-BLUE = (57, 135, 229)      # --accent (dark)
-CONE = (44, 44, 42)
-CONE_LIT = (70, 70, 66)
-CAP = (57, 135, 229)
+BG = (11, 11, 11)          # the splash's black
+TILE = (16, 16, 16)
+SILVER = (178, 180, 184)   # the frame, like the logo's metal
+GAP = (20, 20, 20)
+RED = (226, 36, 46)        # GetLow red (the glowing surround)
+CONE = (40, 40, 40)
+CONE_LIT = (66, 66, 66)
+CAP = (24, 24, 24)
 
 # rings from the outside in: (radius as a fraction of the tile, colour)
 def rings(scale):
     s = scale
     return [
-        (0.40 * s, BLUE),       # surround
-        (0.345 * s, CONE_LIT),  # cone edge
-        (0.33 * s, CONE),       # cone
-        (0.13 * s, BLUE),       # dust cap edge
-        (0.115 * s, CAP),       # dust cap
+        (0.425 * s, SILVER),    # frame
+        (0.395 * s, GAP),       # its inner edge
+        (0.375 * s, RED),       # surround
+        (0.335 * s, CONE_LIT),  # cone edge
+        (0.32 * s, CONE),       # cone
+        (0.14 * s, RED),        # dust cap rim
+        (0.12 * s, CAP),        # dust cap
     ]
 
 

@@ -64,6 +64,7 @@
     { k: 'xmax',   q: 'len',   re: /\bxmax\b|linear excursion|max\w* (linear )?excursion|one.?way excursion/, not: /mech|xmech|damage|limit/ },
     { k: '_perCoil', q: 'ohm', re: /impedance.*per coil|per coil.*impedance/ },
     { k: 'znom',   q: 'ohm',   re: /^impedance$|nominal impedance|\bznom\b|^impedance \(?nominal\)?/ },
+    { k: 'bolt',   q: 'len',   re: /bolt circle|(mounting )?hole circle|mounting (hole )?(pcd|pitch circle)/ },
     { k: 'dia',    q: 'len',   re: /overall (outside |outer )?diameter|outer diameter|outside diameter|frame diameter/ },
     { k: 'cutout', q: 'len',   re: /cut.?out/ },
     { k: 'depth',  q: 'len',   re: /^depth$|mounting depth|overall depth|total depth/ },
@@ -114,7 +115,7 @@
       case 'le': case 'l2': return v > 20 ? { f: 1e-6, disp: 'µH' } : { f: 1e-3, disp: 'mH' };
       case 'Mms': case 'Mmd': return v < 1 ? { f: 1, disp: 'kg' } : { f: 1e-3, disp: 'g' };
       case 'Cms': return v < 0.01 ? { f: 1, disp: 'm/N' } : v > 20 ? { f: 1e-6, disp: 'µm/N' } : { f: 1e-3, disp: 'mm/N' };
-      case 'dia': case 'cutout': case 'depth': return v > 60 ? { f: 1e-3, disp: 'mm' } : { f: IN, disp: 'in' };
+      case 'dia': case 'cutout': case 'depth': case 'bolt': return v > 60 ? { f: 1e-3, disp: 'mm' } : { f: IN, disp: 'in' };
       default: return { f: 1, disp: (UNITS[RULES.find(r => r.k === k).q][0] || [, , ''])[2] };
     }
   }
@@ -259,7 +260,7 @@
   function toParams(F, notes) {
     const p = {};
     const take = (k, to) => { if (F[k]) p[to || k] = F[k].si; };
-    ['fs', 'qts', 'qes', 'qms', 'vas', 'sd', 're', 'le', 'l2', 'r2', 'xmax', 'pe', 'znom', 'BL', 'Mms', 'Cms', 'Rms', 'dvol', 'dia', 'cutout', 'depth'].forEach(k => take(k));
+    ['fs', 'qts', 'qes', 'qms', 'vas', 'sd', 're', 'le', 'l2', 'r2', 'xmax', 'pe', 'znom', 'BL', 'Mms', 'Cms', 'Rms', 'dvol', 'dia', 'cutout', 'bolt', 'depth'].forEach(k => take(k));
     if (!p.Mms && F.Mmd) { p.Mms = F.Mmd.si; notes.push(['info', 'Only Mmd (without air load) was given; used it as Mms. Mms is usually a few grams higher.']); }
     // Vd is Sd x Xmax, not the space the driver takes in the box
     if (p.dvol && p.sd && p.xmax && Math.abs(p.dvol / (p.sd * p.xmax) - 1) < 0.15) {

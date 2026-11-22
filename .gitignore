@@ -9,3 +9,6 @@ Thumbs.db
 
 # site build output (tools/build-site.py)
 build/
+
+# original artwork (large); the web-ready copies are in art/
+art-src/

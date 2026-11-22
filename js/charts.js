@@ -26,6 +26,15 @@
       this.legend = document.createElement('div');
       this.legend.className = 'chart-legend';
       host.append(this.legend, this.svg, this.tip);
+      // save as a picture or as data, from the corner of every chart
+      this.saveBtn = document.createElement('button');
+      this.saveBtn.className = 'chart-save';
+      this.saveBtn.type = 'button';
+      this.saveBtn.title = 'Save this chart';
+      this.saveBtn.setAttribute('aria-label', 'Save this chart');
+      this.saveBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v8.5M4.5 6.5 8 10l3.5-3.5M2.5 11.5v2h11v-2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      this.saveBtn.onclick = (e) => { e.stopPropagation(); this.saveMenu(); };
+      host.append(this.saveBtn);
       this.cfg = null;
       new ResizeObserver(() => this.render()).observe(host);
       this.svg.addEventListener('mousemove', (e) => this.hover(e));
@@ -161,6 +170,90 @@
       if (left + tw > r.width - 4) left = px - tw - 14;
       this.tip.style.left = left + 'px';
       this.tip.style.top = (this.legend.offsetHeight + g.m.t + 6) + 'px';
+    }
+
+    // ---- export ----
+    name() { return (this.cfg && (this.cfg.title || this.cfg.ylabel)) || 'chart'; }
+    fileBase() { return ('GetLow ' + (this.cfg && this.cfg.fileTitle ? this.cfg.fileTitle + ' ' : '') + this.name()).replace(/[^\w.-]+/g, '_'); }
+    saveMenu() {
+      const old = this.host.querySelector('.chart-menu');
+      if (old) { old.remove(); return; }
+      if (!this.cfg || !this.cfg.series.length) return;
+      const menu = document.createElement('div');
+      menu.className = 'chart-menu';
+      const item = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = () => { menu.remove(); fn(); }; menu.append(b); };
+      item('Picture (PNG)', () => this.savePng());
+      item('Data (CSV)', () => GL.util.downloadText(this.fileBase() + '.csv', this.toCSV(), 'text/csv'));
+      this.host.append(menu);
+      const off = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', off); } };
+      setTimeout(() => document.addEventListener('mousedown', off), 0);
+    }
+    // One column per curve on a shared frequency column when they share one;
+    // otherwise a frequency and value column for each curve.
+    toCSV() {
+      const cfg = this.cfg, ser = cfg.series;
+      const q = (t) => '"' + String(t).replace(/"/g, '""') + '"';
+      const head = (se) => q(se.name + (cfg.unit ? ' (' + cfg.unit + ')' : ''));
+      const xu = cfg.xunit || 'Hz';
+      const same = ser.every(se => se.x.length === ser[0].x.length && Array.from(se.x).every((v, i) => Math.abs(v - ser[0].x[i]) <= 1e-9 * Math.max(1, v)));
+      const num = (v) => isFinite(v) ? +(+v).toPrecision(6) : '';
+      const lines = [];
+      if (same) {
+        lines.push([q('Frequency (' + xu + ')'), ...ser.map(head)].join(','));
+        for (let i = 0; i < ser[0].x.length; i++) lines.push([num(ser[0].x[i]), ...ser.map(se => num(se.y[i]))].join(','));
+      } else {
+        lines.push(ser.flatMap(se => [q(se.name + ': frequency (' + xu + ')'), head(se)]).join(','));
+        const n = Math.max(...ser.map(se => se.x.length));
+        for (let i = 0; i < n; i++) lines.push(ser.flatMap(se => i < se.x.length ? [num(se.x[i]), num(se.y[i])] : ['', '']).join(','));
+      }
+      return lines.join('\r\n') + '\r\n';
+    }
+    // The chart as drawn (colours from the page's theme), with its title and legend, at twice the size.
+    savePng() {
+      const src = this.svg, W = +src.getAttribute('width'), H = +src.getAttribute('height');
+      if (!W || !H) return;
+      const cs = getComputedStyle(this.host);
+      const bg = cs.getPropertyValue('--surface-1').trim() || '#fff', ink = cs.getPropertyValue('--text-primary').trim() || '#111', ink2 = cs.getPropertyValue('--text-secondary').trim() || '#555';
+      const clone = src.cloneNode(true);
+      // copy the computed look onto each element, so the picture doesn't need the page's CSS
+      const props = ['fill', 'stroke', 'stroke-width', 'stroke-dasharray', 'stroke-opacity', 'fill-opacity', 'opacity', 'font-size', 'font-family', 'font-weight', 'visibility'];
+      const a = src.querySelectorAll('*'), b = clone.querySelectorAll('*');
+      for (let i = 0; i < a.length; i++) {
+        const st = getComputedStyle(a[i]);
+        b[i].setAttribute('style', props.map(p => p + ':' + st.getPropertyValue(p)).join(';'));
+      }
+      for (const el of clone.querySelectorAll('.cross, .dot')) el.remove();
+      // title and legend above the plot
+      const ser = this.cfg.series, lgH = 18, perRow = Math.max(1, Math.floor((W - 60) / 230));
+      const rows = ser.length > 1 ? Math.ceil(ser.length / perRow) : 0, top = 30 + rows * lgH + (rows ? 6 : 0);
+      const out = s('svg', { xmlns: NS, width: W, height: H + top + 8, viewBox: `0 0 ${W} ${H + top + 8}` });
+      out.append(s('rect', { x: 0, y: 0, width: W, height: H + top + 8, fill: bg }));
+      const title = s('text', { x: 52, y: 20, fill: ink, 'font-size': 14, 'font-weight': 600, 'font-family': 'system-ui, sans-serif' });
+      title.textContent = (this.cfg.fileTitle ? this.cfg.fileTitle + ' · ' : '') + this.name();
+      out.append(title);
+      ser.forEach((se, i) => {
+        if (ser.length < 2) return;
+        const x = 52 + (i % perRow) * 230, y = 30 + Math.floor(i / perRow) * lgH + 9;
+        const col = se.color.startsWith('var(') ? cs.getPropertyValue(se.color.slice(4, -1).trim()).trim() || ink : se.color;
+        out.append(s('line', { x1: x, y1: y - 4, x2: x + 18, y2: y - 4, stroke: col, 'stroke-width': 2.5, 'stroke-linecap': 'round', 'stroke-dasharray': se.dash || '' }));
+        const t = s('text', { x: x + 24, y, fill: ink2, 'font-size': 12, 'font-family': 'system-ui, sans-serif' });
+        t.textContent = se.name.length > 34 ? se.name.slice(0, 33) + '…' : se.name;
+        out.append(t);
+      });
+      const g = s('g', { transform: `translate(0 ${top})` });
+      while (clone.firstChild) g.append(clone.firstChild);
+      out.append(g);
+      const text = new XMLSerializer().serializeToString(out);
+      const img = new Image();
+      img.onload = () => {
+        const k = 2, c = document.createElement('canvas');
+        c.width = W * k; c.height = (H + top + 8) * k;
+        const g2 = c.getContext('2d');
+        g2.scale(k, k);
+        g2.drawImage(img, 0, 0);
+        c.toBlob((blob) => GL.util.downloadBlob(this.fileBase() + '.png', blob), 'image/png');
+      };
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text);
     }
 
     unhover() {

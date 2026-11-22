@@ -10,6 +10,14 @@
   const GL = window.GL = window.GL || {};
   const IN = 0.0254;
 
+  // Mounting screws: the datasheet's bolt circle, else midway between the cutout
+  // and the frame's edge; 4 screws below 8", 8 from 8" up (the usual).
+  function screws(params, cut) {
+    const outer = params.dia > 0 ? params.dia : 2 * Math.sqrt(params.sd / Math.PI) * 1.18;
+    const bolt = params.bolt > 0 ? params.bolt : (outer + cut) / 2;
+    const n = params.holes > 0 ? Math.round(params.holes) : outer < 0.2 ? 4 : 8;
+    return { n, bolt, est: !(params.bolt > 0), d: outer < 0.12 ? 0.0025 : 0.0035 };
+  }
   // Cutout for a driver: the datasheet figure, else about 88% of the frame.
   function driverCutout(params) {
     if (params.cutout > 0) return { d: params.cutout, est: false };
@@ -29,13 +37,16 @@
     const zBi = -D / 2 + t, zFi = D / 2 - t * box.layers, intD = zFi - zBi;
     const sa = box.split === 'W' ? 0 : 1;
     const drvCut = o.drvCut || { d: 0.1, est: true };
+    const scr = o.screws || null;
     const out = [];
     const near = (a, b) => Math.abs(a - b) < 1e-4;
 
     // everything that makes a hole, in box coordinates
     const feats = [];
     if (plan) {
-      for (const d of plan.drivers) feats.push({ kind: 'driver', P: d.pos, d: drvCut.d, est: drvCut.est, label: 'Driver cutout' });
+      for (const d of plan.drivers) {
+        feats.push({ kind: 'driver', P: d.pos, d: drvCut.d, est: drvCut.est, label: 'Driver cutout', screws: scr, dir: d.dir });
+      }
       for (const p of plan.prs) {
         const pr = design.prs[0];
         const c = pr ? prCutout(pr.sd) : { d: 2 * p.r * 0.88, est: true };
@@ -76,6 +87,13 @@
         if (f.P) {
           const [u, v] = toPanel(fr, f.P);
           holes.push({ kind: f.kind, shape: 'circle', u, v, d: f.d, est: f.est, label: f.label });
+          if (f.screws) {
+            const sc = f.screws, start = Math.PI / sc.n;
+            for (let k = 0; k < sc.n; k++) {
+              const a = start + k * 2 * Math.PI / sc.n;
+              holes.push({ kind: 'screw', shape: 'circle', u: u + sc.bolt / 2 * Math.cos(a), v: v + sc.bolt / 2 * Math.sin(a), d: sc.d, bolt: sc.bolt, est: sc.est, label: 'Pilot hole' });
+            }
+          }
         } else {
           const [a0, b0] = toPanel(fr, f.box3[0]), [a1, b1] = toPanel(fr, f.box3[1]);
           const u = Math.max(0, Math.min(a0, a1)), v = Math.max(0, Math.min(b0, b1));
@@ -93,9 +111,29 @@
       }
       if (/^Front baffle/.test(r.name)) {
         const zf = D / 2;
-        const holes = holesOn(frontFrame, (z) => z > zFi - 1e-4 && z < zf + 1e-4);
-        out.push({ name: r.name, qty: r.qty, w: frontFrame.w, h: frontFrame.h, holes, edges: frontFrame.edges, view: frontFrame.view,
-          note: r.qty > 1 ? 'Every layer gets the same cutouts. To flush-mount the drivers, rebate the outer layer to the frame size.' : null });
+        const fr = Object.assign({}, frontFrame, { u0: -r.a / 2, v0: -r.b / 2, w: r.a, h: r.b });
+        const holes = holesOn(fr, (z) => z > zFi - 1e-4 && z < zf + 1e-4);
+        const inner = /inner layers/.test(r.name);
+        out.push({ name: r.name, qty: r.qty, w: fr.w, h: fr.h, holes, edges: fr.edges, view: fr.view,
+          note: r.qty > 1 || /outer layer/.test(r.name) ? 'Every layer gets the same cutouts' + (inner ? '' : '; screw the drivers into the outer one') + '. To flush-mount the drivers, rebate the outer layer to the frame size.' : null });
+        continue;
+      }
+      if (r.name === 'Back' && o.terminal && o.terminal.on && o.terminal.size > 0) {
+        // terminal cup: in the chamber the driver's motor is in, low on the back
+        const fr = { u: 0, v: 1, u0: -r.a / 2, v0: -r.b / 2, w: r.a, h: r.b, plane: 2 };
+        let cx = 0, cy = -H / 2 + t + Math.max(o.terminal.size, (H - 2 * t) * 0.3);
+        if (layout && layout.chambers.length > 1 && design.mount) {
+          const ext = [W, H, D], c = layout.chambers.find(x => x.id === design.mount.rear) || layout.chambers[0];
+          const mid = -ext[sa] / 2 + c.start + c.len / 2;
+          if (sa === 0) cx = mid; else cy = mid;
+        }
+        // seen from behind, left and right swap
+        const u = -cx - fr.u0, v = cy - fr.v0, s2 = o.terminal.size;
+        const holes = o.terminal.shape === 'round'
+          ? [{ kind: 'terminal', shape: 'circle', u, v, d: s2, label: 'Terminal cup cutout' }]
+          : [{ kind: 'terminal', shape: 'rect', u: u - s2 / 2, v: v - s2 / 2, w: s2, h: s2, label: 'Terminal cup cutout' }];
+        out.push({ name: r.name, qty: r.qty, w: r.a, h: r.b, holes, edges: { left: 'right side', right: 'left side', top: 'top', bottom: 'bottom' }, view: 'Seen from behind',
+          note: 'Check the cup\'s own cutout size before cutting; seal it with its gasket or a bead of caulk.' });
         continue;
       }
       if (r.name === 'Divider' && layout && layout.chambers.length > 1) {
@@ -122,7 +160,13 @@
     let k = 0;
     for (const p of out) if (!p.stock) p.key = String.fromCharCode(65 + (k++ % 26)) + (k > 26 ? Math.ceil(k / 26) : '');
     // number the holes on each panel
-    for (const p of out) p.holes.forEach((hh, i) => { hh.n = i + 1; });
+    for (const p of out) {
+      let k = 0, last = null;
+      for (const hh of p.holes) {
+        if (hh.kind === 'screw') { hh.n = last; hh.screw = true; continue; }
+        hh.n = ++k; last = k;
+      }
+    }
     return out;
   }
 
@@ -190,6 +234,7 @@
     for (const hh of p.holes) {
       if (hh.shape === 'circle') {
         const cx = hh.u * mm, cy = y(hh.v), r = hh.d * mm / 2;
+        if (hh.screw) { s.push(`<circle class="bs-screw" cx="${n2(cx)}" cy="${n2(cy)}" r="${n2(Math.max(r, fs * 0.12))}"/>`); continue; }
         s.push(`<circle class="bs-hole bs-${hh.kind}" cx="${n2(cx)}" cy="${n2(cy)}" r="${n2(r)}"/>`);
         s.push(`<path class="bs-centre" d="M${n2(cx - fs * 0.7)} ${n2(cy)}h${n2(fs * 1.4)}M${n2(cx)} ${n2(cy - fs * 0.7)}v${n2(fs * 1.4)}"/>`);
         s.push(`<text class="bs-num" x="${n2(cx + fs * 0.5)}" y="${n2(cy - fs * 0.5)}" font-size="${n2(fs)}">${hh.n}</text>`);
@@ -218,9 +263,22 @@
 
   // Where each cutout goes, measured from the left and bottom edges.
   function holeRows(p, fmt) {
-    return p.holes.map(hh => hh.shape === 'circle'
+    const rows = [];
+    for (const hh of p.holes) {
+      if (hh.screw) {
+        // one row per cutout: n pilot holes on its bolt circle
+        const r = rows[rows.length - 1];
+        if (r && r.n === hh.n && !r.screwRow) rows.push({ n: hh.n, screwRow: true, what: 'Screws for ' + hh.n, size: p.holes.filter(x => x.screw && x.n === hh.n).length + ' pilot holes Ø ' + fmt(hh.d), at: 'evenly on a Ø ' + fmt(hh.bolt) + ' circle round it' + (hh.est ? ' (estimated: mark them from the driver)' : '') });
+        continue;
+      }
+      rows.push(rowFor(hh, fmt));
+    }
+    return rows;
+  }
+  function rowFor(hh, fmt) {
+    return hh.shape === 'circle'
       ? { n: hh.n, what: hh.label, size: 'Ø ' + fmt(hh.d) + (hh.est ? ' (estimated)' : ''), at: 'centre ' + fmt(hh.u) + ' from the left, ' + fmt(hh.v) + ' from the bottom' }
-      : { n: hh.n, what: hh.label, size: fmt(hh.w) + ' × ' + fmt(hh.h), at: 'corner ' + fmt(hh.u) + ' from the left, ' + fmt(hh.v) + ' from the bottom' });
+      : { n: hh.n, what: hh.label, size: fmt(hh.w) + ' × ' + fmt(hh.h), at: 'corner ' + fmt(hh.u) + ' from the left, ' + fmt(hh.v) + ' from the bottom' };
   }
 
   // One stock sheet with its parts.
@@ -252,6 +310,7 @@
 .bs-hole { fill: var(--bs-hole, #fff); stroke: var(--bs-cut, #c0392b); stroke-width: 1.6px; vector-effect: non-scaling-stroke; stroke-dasharray: 6 3; }
 .bs-centre, .bs-dim { stroke: var(--bs-ink, #222); stroke-width: 1px; vector-effect: non-scaling-stroke; fill: none; }
 .bs-num { fill: var(--bs-cut, #c0392b); font-weight: 700; }
+.bs-screw { fill: var(--bs-hole, #fff); stroke: var(--bs-cut, #c0392b); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .bs-dimtext { fill: var(--bs-ink, #222); }
 .bs-edge { fill: var(--bs-muted, #666); font-style: italic; }
 .bs-sheet { fill: var(--bs-hole, #fff); stroke: var(--bs-ink, #222); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
@@ -260,5 +319,5 @@
 .bs-sz { fill: var(--bs-muted, #555); }
 `;
 
-  GL.buildsheet = { driverCutout, prCutout, panels, nest, panelSvg, holeRows, sheetSvg, CSS, IN };
+  GL.buildsheet = { driverCutout, prCutout, screws, panels, nest, panelSvg, holeRows, sheetSvg, CSS, IN };
 })();
