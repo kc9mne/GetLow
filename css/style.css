@@ -243,7 +243,7 @@ body.dropping .dropmask {
 .catbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
 .catbar input[type=search] { flex: 1 1 220px; min-width: 0; }
 .catlist { max-height: 60vh; overflow: auto; }
-.catlist .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border, #444); border-radius: 4px; padding: 0 4px; margin-left: 6px; font-weight: 400; }
+.catlist .tag, .drvlist .tag, .npcard .tag { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border, #444); border-radius: 4px; padding: 0 4px; margin-left: 6px; font-weight: 400; }
 .catlist .catlink { margin-left: 6px; text-decoration: none; font-weight: 400; }
 
 /* room modes and placement */
@@ -327,6 +327,7 @@ body.noproj .layout { display: none; }
 .npfilter { display: flex; gap: 10px; align-items: center; }
 .npfilter .field { flex: none; margin: 0; }
 .npfilter .txt { flex: 1; }
+.npadd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
 .drvlist { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; }
 .drvrow { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; padding: 6px 10px; border: none; border-bottom: 1px solid var(--grid); background: transparent; cursor: pointer; }
 .drvrow:hover { background: var(--surface-2); }

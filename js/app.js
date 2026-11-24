@@ -1447,7 +1447,7 @@
   // ---------------------------------------------------------------- spec import
   // Review screen for pasted specs: shows how each value was read, converted
   // into both unit systems, with consistency checks re-run on every edit.
-  function openImport(text) {
+  function openImport(text, opt = {}) {
     const dlg = document.getElementById('importdlg');
     const SP = GL.specparse;
     let parsed = null, params = {}, pub = 'series';
@@ -1535,15 +1535,19 @@
         if (!confirm(lib.name(d) + ' is already in your library. Replace its specs?')) return;
         Object.assign(same, { params: d.params, comment: d.comment, vc: d.vc, source: d.source });
         lib.save();
-        S.driverId = same.id;
       } else {
         lib.add(d);
-        S.driverId = d.id;
       }
-      S.design.driverDisp = params.dvol || 0;
+      const added = same || d;
       dlg.close();
+      const note = params.dvolEstimated ? ' (displacement estimated, check it)' : '';
+      // from the new-project dialog, or with no project open, it only goes into the library
+      if (opt.onAdded) { opt.onAdded(added); toast('Added ' + lib.name(added) + note); return; }
+      if (!hasProject()) { toast('Added ' + lib.name(added) + ' to your drivers' + note + '. Start a new project and search for it.'); return; }
+      S.driverId = added.id;
+      S.design.driverDisp = params.dvol || 0;
       changed(true);
-      toast('Added ' + lib.name(d) + (params.dvolEstimated ? ' (displacement estimated, check it)' : ''));
+      toast('Added ' + lib.name(added) + note);
     };
 
     ta.addEventListener('input', parse);
@@ -1740,7 +1744,9 @@
       if (!text) return;
       if (/^GetLow specs/i.test(text) || GL.specparse.parse(text).count >= 4) {
         e.preventDefault();
-        openImport(text);
+        // pasted while picking a driver for a new project: add it and pick it there
+        const nd = document.getElementById('newdlg');
+        openImport(text, nd.open && nd._onAdded ? { onAdded: nd._onAdded } : {});
       }
     });
     const fromHash = () => {
@@ -1771,7 +1777,7 @@
     }
     if (rest.length) importFiles(rest);
   }
-  async function importFiles(files) {
+  async function importFiles(files, opt = {}) {
     const done = [], bad = [];
     for (const f of files) {
       try {
@@ -1787,9 +1793,17 @@
         bad.push(f.name + ': ' + e.message);
       }
     }
-    if (done.length) { S.driverId = done[done.length - 1].id; S.design.driverDisp = driver().params.dvol || 0; }
-    changed(true);
-    if (done.length) toast('Imported ' + done.map(d => DRV.library.name(d)).join(', '));
+    const names = done.map(d => DRV.library.name(d)).join(', ');
+    if (opt.onAdded || !hasProject()) {
+      if (done.length) {
+        if (opt.onAdded) opt.onAdded(done[done.length - 1]);
+        toast('Imported ' + names + (opt.onAdded ? '' : ' to your drivers. Start a new project and search for it.'));
+      }
+    } else {
+      if (done.length) { S.driverId = done[done.length - 1].id; S.design.driverDisp = driver().params.dvol || 0; }
+      changed(true);
+      if (done.length) toast('Imported ' + names);
+    }
     if (bad.length) toast('Could not read ' + bad.join('; '), true);
   }
 
@@ -3848,7 +3862,7 @@
     th: 'A folded horn driven from both sides of the cone: big output from a modest box.', flh: 'A horn on the front of the cone: efficient, large.',
     tl: 'A long folded line that reinforces the bass.', pipe: 'A straight tube loaded on the front.', blh: 'A horn on the back of the cone, for full-range drivers.',
   };
-  const KIND_SIZES = { sub: [8, 10, 12, 15, 18, 21], full: [2, 3, 4, 5.25, 6.5, 8], array: [2, 3, 4, 5.25] };
+  const KIND_SIZES = { sub: [5.25, 6.5, 8, 10, 12, 15, 18, 21], full: [2, 3, 4, 5.25, 6.5, 8], array: [2, 3, 4, 5.25] };
   const KIND_DEFAULT_SIZE = { sub: 12, full: 3, array: 3 };
   // band judged when ranking drivers for a box, and the top of what the kind plays
   const KIND_BAND = { sub: { band: [25, 80], top: 100 }, full: { band: [60, 300], top: 300 }, array: { band: [80, 400], top: 400 } };
@@ -3863,6 +3877,7 @@
 
     // ---- step 1: what are you building
     const step1 = () => {
+      dlg._onAdded = null;
       dlg.innerHTML = '';
       dlg.append(h('h3', null, 'New project'), h('p', { class: 'hint' }, 'What are you building?'),
         h('div', { class: 'kindlist' }, KINDS.map(k => h('button', { class: 'kindbtn', onclick: () => {
@@ -3906,9 +3921,24 @@
             h('span', { class: 'drvstats' }, [e.size ? (+e.size).toFixed(e.size % 1 ? 2 : 0) + '"' : '', 'Fs ' + (p.fs || 0).toFixed(0), 'Qts ' + (p.qts || (p.qes && p.qms ? p.qes * p.qms / (p.qes + p.qms) : 0)).toFixed(2), 'Vas ' + U.fmt('vol', p.vas || 0), p.xmax ? 'Xmax ' + (p.xmax * 1000).toFixed(1) + ' mm' : ''].filter(Boolean).join(' · ')));
           list.append(row);
         }
-        if (!hits.length) list.append(h('p', { class: 'hint' }, 'No drivers match. Try another size or search.'));
+        if (!hits.length) list.append(h('p', { class: 'hint' }, 'No drivers match. Try "Any size", another search, or add the driver below.'));
       };
       sizeSel.onchange = () => { st.size = sizeSel.value ? +sizeSel.value : null; fillList(); };
+      // a driver added here goes into the library and is picked, whatever its size
+      const onAdded = async (d) => {
+        pool = null; fillList();
+        const r = await matchDrivers({ pe: true });
+        pool = r.list.filter(e => e.params && e.params.fs > 0 && e.params.sd > 0);
+        poolNote = r.note || '';
+        st.entry = pool.find(e => e.lib && e.lib.id === d.id) || null;
+        st.size = null; sizeSel.value = '';
+        st.q = DRV.library.name(d); search.value = st.q;
+        nextBtn.disabled = !st.entry;
+        fillList();
+        if (!dlg.open) dlg.showModal();
+      };
+      dlg._onAdded = onAdded;
+      const addFile = h('input', { type: 'file', multiple: true, accept: '.wdr,.txt,.json', style: { display: 'none' }, onchange: (e) => { importFiles(e.target.files, { onAdded }); e.target.value = ''; } });
       search.oninput = () => { st.q = search.value; fillList(); };
 
       // box first
@@ -4047,6 +4077,10 @@
         h('h4', null, 'Pick a driver'),
         h('div', { class: 'npfilter' }, h('label', { class: 'field' }, h('span', { class: 'fl' }, 'Size'), h('span', { class: 'fi' }, sizeSel)), search),
         count, list,
+        h('div', { class: 'npadd' }, h('span', { class: 'hint' }, 'Not listed?'),
+          btn('Paste specs…', () => openImport('', { onAdded }), 'btn small'),
+          btn('Import .wdr file…', () => addFile.click(), 'btn small'), addFile,
+          h('span', { class: 'hint' }, 'Copy the spec table from the Parts Express page (or a datasheet) and paste it.')),
         h('div', { class: 'btnrow' }, nextBtn, btn('Back', step1, 'btn ghost'), btn('Cancel', close, 'btn ghost')),
         h('details', { class: 'npbox', open: true },
           h('summary', null, 'Or start from a box and find the best drivers for it'),
@@ -4069,6 +4103,7 @@
 
     // ---- step 3: alignment and name for a driver picked by hand
     const step3 = () => {
+      dlg._onAdded = null;
       const k = kind();
       const n = projects.filter(p => (p.id === activeId ? S.kind : (JSON.parse(p.text).state || {}).kind) === k.id).length + 1;
       st.name = st.name || (k.id === 'sub' ? 'Subwoofer ' : k.id === 'full' ? 'Speaker ' : 'Line array ') + n;
@@ -4500,12 +4535,20 @@
   function defaultMatch() { return { goal: 'blend', drive: 'amp', watts: 300, volts: 2.83, f0: 25, f1: 80, ripple: 2, size: 'fits', pe: true, keep: 10, ohms: 'any', coils: 'any', load: 'any' }; }
 
   // Every driver we know of: the catalogue (when built) and the library.
+  // A library driver's nominal size from its cone area (typical Sd of each size, cm²), so a pasted
+  // 5-1/4" woofer shows as 5.25", not as its 4" cone
+  const NOMINAL_SD = [[2, 12], [3, 30], [4, 55], [5.25, 88], [6.5, 135], [8, 215], [10, 340], [12, 495], [15, 860], [18, 1210], [21, 1650]];
+  function nominalSize(p) {
+    const cm2 = (p.sd || 0) * 1e4;
+    if (!(cm2 > 0)) return GL.match.outerDia(p) / 1.18 / U.IN;
+    return NOMINAL_SD.reduce((b, x) => Math.abs(Math.log(x[1] / cm2)) < Math.abs(Math.log(b[1] / cm2)) ? x : b)[0];
+  }
   async function matchDrivers(o) {
     const out = [], seen = new Set();
     const push = (e) => { const k = e.name.toLowerCase(); if (seen.has(k)) return; seen.add(k); out.push(e); };
     for (const d of DRV.library.list) {
       if (!(d.params && d.params.fs > 0 && d.params.sd > 0)) continue;
-      push({ key: 'lib:' + d.id, name: DRV.library.name(d), params: d.params, vc: d.vc, lib: d, size: (GL.match.outerDia(d.params) / 1.18 / U.IN) });
+      push({ key: 'lib:' + d.id, name: DRV.library.name(d), params: d.params, vc: d.vc, lib: d, size: nominalSize(d.params) });
     }
     let note = '';
     try {
@@ -4697,6 +4740,10 @@
     document.getElementById('wopen').onclick = () => open.click();
     document.getElementById('newproj').onclick = () => newProjectDialog();
     document.getElementById('wnew').onclick = () => newProjectDialog();
+    document.getElementById('wpaste').onclick = () => openImport('');
+    const wfile = document.getElementById('wdrvfile');
+    document.getElementById('wdrv').onclick = () => wfile.click();
+    wfile.onchange = () => { importFiles(wfile.files); wfile.value = ''; };
     open.onchange = async () => {
       // each file opens in a tab of its own
       for (const f of Array.from(open.files)) {

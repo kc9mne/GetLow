@@ -3,8 +3,13 @@
 (function () {
   'use strict';
   const GL = window.GL = window.GL || {};
-  GL.VERSION = '1.1.0';
+  GL.VERSION = '1.1.1';
   GL.CHANGES = [
+    { v: '1.1.1', date: '2026-11-24', items: [
+      'Add a driver from the start page (paste specs or a .wdr file), or from New project when it isn\'t listed: it is picked for you.',
+      'Subwoofers can be 5.25" and 6.5" in New project.',
+      'Your own drivers show their nominal size (a pasted 5-1/4" woofer is 5.25", not its 4" cone).',
+    ] },
     { v: '1.1.0', date: '2026-11-20', items: [
       'Back up everything to one file and restore it (Tools tab); GetLow asks the browser to keep its storage.',
       'Undo and redo for design changes (Ctrl+Z, Ctrl+Y).',
