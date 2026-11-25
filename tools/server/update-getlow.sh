@@ -8,9 +8,12 @@
 #
 # Needs git and python3:   sudo apt install git python3
 #
-# Run it from cron as the user that owns the website (with Virtualmin, the
-# virtual server's own user), e.g. every 5 minutes:
-#   */5 * * * * $HOME/update-getlow.sh >> $HOME/update-getlow.log 2>&1
+# Put it in the website's home folder, next to its public_html (Virtualmin:
+# /home/USER for a server, /home/USER/domains/DOMAIN for a sub-server), and
+# run it from cron as the owner of that folder every few minutes, e.g.
+#   */5 * * * * /home/USER/domains/DOMAIN/update-getlow.sh >> /home/USER/domains/DOMAIN/update-getlow.log 2>&1
+# It keeps its copy of the repository in getlow-src beside it. WEB=... or
+# SRC=... in front of the command point it somewhere else.
 #
 # Files in the website folder that GetLow doesn't have are left alone, and an
 # .htaccess the site already has is never overwritten. Run it with --force to
@@ -20,8 +23,9 @@ set -e
 
 REPO="https://github.com/kc9mne/GetLow.git"
 BRANCH="main"
-SRC="$HOME/getlow-src"        # a copy of the repository, outside the website
-WEB="$HOME/public_html"       # where the site is served from: change it if GetLow is in a subfolder
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC="${SRC:-$HERE/getlow-src}"     # a copy of the repository, outside the website
+WEB="${WEB:-$HERE/public_html}"    # where the site is served from
 BUILD_OPTS="--with-pe"        # include the Parts Express catalogue (no prices); empty to leave it out
 
 if [ ! -d "$SRC/.git" ]; then
