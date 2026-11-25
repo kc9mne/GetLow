@@ -21,6 +21,13 @@
 
 set -e
 
+# as root, the files it makes would belong to root and the site's own user
+# (who runs it from cron) could no longer update them
+if [ "$(id -u)" = 0 ]; then
+  echo "Run this as the website's owner, not root, e.g.: sudo -u USER -H $0" >&2
+  exit 1
+fi
+
 REPO="https://github.com/kc9mne/GetLow.git"
 BRANCH="main"
 HERE="$(cd "$(dirname "$0")" && pwd)"
