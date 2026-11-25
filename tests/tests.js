@@ -1358,6 +1358,29 @@
     }));
   }
 
+  // ---- folded transmission line ----
+  {
+    const G = GL.geometry, E = GL.enclosures;
+    const line = (fold) => ({ length: 2.4, width: 0.25, h0: 0.12, hL: 0.08, drvPos: 0.15, shape: 'rect', mouthFlanged: true, stuffing: 0.3, fold });
+    for (const fo of [{ n: 1 }, { n: 2 }, { n: 3, mouth: 'end' }, { n: 2, dividers: 'parallel', legs: 'horizontal' }]) {
+      const r = G.lineFold({ line: line(fo) });
+      near('folded line: the path along the centre is the line length (' + JSON.stringify(fo) + ')', r.path, 2.4, 1e-9);
+    }
+    const r2 = G.lineFold({ line: line({ n: 2 }) });
+    truthy('folded line: legs stack to the inside depth at both ends', Math.abs(r2.legs.reduce((s, g) => s + g.hA, 0) + 2 * r2.t - r2.Din) < 1e-9 && Math.abs(r2.legs.reduce((s, g) => s + g.hB, 0) + 2 * r2.t - r2.Din) < 1e-9, '');
+    truthy('folded line: outside is inside plus two walls', Math.abs(r2.ext.H - r2.Lin - 2 * r2.t) < 1e-12 && Math.abs(r2.ext.W - 0.25 - 2 * r2.t) < 1e-12, '');
+    // a square line's area across a corner's diagonal is √2 times (no corner block), back to the gap mid-turn
+    const sq = { length: 2, width: 0.1, h0: 0.1, hL: 0.1, shape: 'rect', drvPos: 0.1, fold: { n: 1, deflect: false, gap: 1, mouth: 'end', t: 0.01 } };
+    const rs = G.lineFold({ line: sq }), fn = E.lineAreaFn(sq), c1 = rs.legs[0].len;
+    near('folded line: the corner diagonal is √2 × the area', fn(c1 + 1e-6) / 0.01, Math.SQRT2, 0.01);
+    near('folded line: mid-turn area is the turn gap', fn(c1 + rs.turns[0].pitch / 2) / 0.01, 1, 0.01);
+    near('folded line: away from the turn it is the line', fn(0.3) / 0.01, 1, 1e-9);
+    const blk = Object.assign({}, sq, { fold: Object.assign({}, sq.fold, { deflect: true }) });
+    truthy('folded line: corner blocks lower the corner peak', E.lineAreaFn(blk)(c1 + 1e-6) < fn(c1 + 1e-6) - 1e-4, '');
+    const par = E.lineAreaFn(line({ n: 2, dividers: 'parallel', deflect: false }));
+    near('folded line: parallel dividers make a stepped taper (first leg = its middle)', par(0.05) / 0.25, 0.12 + (0.08 - 0.12) / 6, 1e-9);
+  }
+
   // ---- room modes and placement ----
   {
     const RM = GL.room, c = GL.phys.c;

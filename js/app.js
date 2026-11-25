@@ -1863,6 +1863,7 @@
     for (const pt of d.ports) out.push(portCard(pt));
     for (const pr of d.prs) out.push(prCard(pr));
     if (d.line) out.push(lineCard());
+    if (d.type === 'tl' && d.line.shape === 'rect') out.push(foldCard());
     if (d.horn) out.push(...hornCards());
     if (!E.isBoxless(d.type) && !E.isLine(d.type) && !E.isHorn(d.type)) {
       if (d.chambers.length > 1) out.push(layoutCard());
@@ -2115,6 +2116,159 @@
       liveText(() => 'Box tuning ' + E.prFb(pr, vol()).toFixed(1) + ' Hz · moving mass ' + (E.prMech(pr).Mm * 1000).toFixed(0) + ' g', 'hint'));
   }
 
+
+  // ---- folded transmission line
+  const foldOf = (L) => (L.fold = Object.assign({}, G.FOLD_DEFAULT, L.fold || {}));
+  const folded = (d) => d && d.type === 'tl' && d.line && d.line.shape === 'rect' && d.line.fold && d.line.fold.n > 0;
+  function foldCard() {
+    const d = S.design, L = d.line, f = foldOf(L);
+    const vert = f.legs === 'vertical';
+    const kids = [
+      nf('Folds', () => f.n, (v) => { f.n = Math.max(0, Math.min(9, Math.round(v))); }, { digits: 0, min: 0, step: 1, structural: true, tip: '0 = a straight line' }),
+    ];
+    if (f.n > 0) {
+      kids.push(h('div', { class: 'grid2' },
+        sel('Legs run', [['vertical', 'Up and down (a tower)'], ['horizontal', 'Side to side (a low box)']], () => f.legs, (v) => { f.legs = v; }),
+        sel('Closed end at', vert ? [['top', 'Top'], ['bottom', 'Bottom']] : [['top', 'Left'], ['bottom', 'Right']], () => f.start, (v) => { f.start = v; }),
+        sel('Dividers', [['angled', 'Angled to follow the taper'], ['parallel', 'Parallel (stepped taper)']], () => f.dividers, (v) => { f.dividers = v; }),
+        sel('Mouth', [['back', 'In the back panel'], ['end', vert ? 'In the top or bottom panel' : 'In the end panel']], () => f.mouth, (v) => { f.mouth = v; }),
+        uf('Turn gap', 'pct', () => f.gap, (v) => { f.gap = Math.max(0.5, Math.min(2, v)); }, { tip: 'Gap at each turn as a share of the line height there: 100% keeps the area through the turn' }),
+        uf('Wall and divider thickness', 'thick', () => f.t, (v) => { f.t = v; })),
+        check('45° corner blocks in the turns', () => f.deflect, (v) => { f.deflect = v; }));
+    }
+    kids.push(liveText(() => {
+      const r = G.lineFold(d);
+      if (!r.n) return 'Straight: outside ' + U.fmt('len', r.ext.W) + ' × ' + U.fmt('len', r.ext.H) + ' × ' + U.fmt('len', r.ext.D) + ' (W × H × D). Add folds to fit it in a box.';
+      return 'Outside ' + U.fmt('len', r.ext.W) + ' W × ' + U.fmt('len', r.ext.H) + ' H × ' + U.fmt('len', r.ext.D) + ' D · legs ' +
+        r.legs.map(g => U.fmt('len', g.len)).join(', ') + ' · air ' + U.fmt('vol', r.air) + ' (line ' + U.fmt('vol', G.lineLayout(d).air) + ')' +
+        (r.warn.length ? ' · ' + r.warn.join(' ') : '');
+    }, 'hint'));
+    // every fold count at a glance
+    const tbl = h('div', { class: 'voltable' });
+    const fillT = () => {
+      tbl.innerHTML = '';
+      const rows = [];
+      for (let k = 0; k <= 5; k++) {
+        const r = G.lineFold({ line: Object.assign({}, L, { fold: Object.assign({}, f, { n: k }) }) });
+        rows.push(h('tr', { class: k === f.n ? 'on' : null },
+          h('th', null, k === 0 ? 'Straight' : k + ' fold' + (k > 1 ? 's' : '')),
+          ...['W', 'H', 'D'].map(x => h('td', null, U.fmt('len', r.ext[x]))),
+          h('td', null, r.warn.length ? '!' : k === f.n ? 'chosen' : h('button', { class: 'btn small ghost', onclick: () => { f.n = k; changed(true); } }, 'Use'))));
+      }
+      tbl.append(h('table', null, h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Width'), h('th', null, 'Height'), h('th', null, 'Depth'), h('th', null, ''))), h('tbody', null, rows)));
+    };
+    fillT(); live.push(fillT);
+    kids.push(tbl, h('p', { class: 'hint' }, 'Length is measured along the centre of the path, so folding keeps the tuning. The first leg runs behind the front baffle, where the driver goes; each turn keeps the line\'s area (gap = line height) and the corner blocks smooth the flow. Parallel dividers are simpler to cut and are simulated as a stepped taper. See the Build tab for the side view and cut list.'));
+    return card('Folding', ...kids);
+  }
+
+  // Side view of a folded line: walls, dividers, corner blocks, the path, driver and mouth.
+  function foldSvg(d) {
+    const r = G.lineFold(d), L = d.line, f = r.fold, t = r.t, vert = f.legs === 'vertical';
+    const NS = 'http://www.w3.org/2000/svg', sv = (tg, at, txt) => { const e = document.createElementNS(NS, tg); for (const k in at) e.setAttribute(k, at[k]); if (txt) e.textContent = txt; return e; };
+    const Lo = r.Lin + 2 * t, Do = r.Din + 2 * t;
+    // a: along the legs from end A (inside), z: depth from the inside of the front
+    const flipA = f.start === 'bottom';
+    const P = (a, z) => {
+      const aa = flipA ? r.Lin - a : a;
+      return vert ? [t + z, t + aa] : [t + aa, t + r.Din - z];
+    };
+    const Wv = vert ? Do : Lo, Hv = vert ? Lo : Do;
+    const pad = Math.max(Wv, Hv) * 0.12;
+    const svg = sv('svg', { viewBox: `${-pad} ${-pad} ${Wv + 2 * pad} ${Hv + 2 * pad}`, class: 'foldsvg', role: 'img', 'aria-label': 'Side view of the folded line' });
+    const poly = (pts, cls) => svg.append(sv('polygon', { points: pts.map(p => p.join(',')).join(' '), class: cls }));
+    svg.append(sv('rect', { x: 0, y: 0, width: Wv, height: Hv, class: 'wall' }));
+    const ip = [P(0, 0), P(r.Lin, 0), P(r.Lin, r.Din), P(0, r.Din)];
+    poly(ip, 'airin');
+    const zAt = (dv, a) => dv.zA + (dv.zB - dv.zA) * a / r.Lin;
+    for (const dv of r.dividers) {
+      const a0 = dv.from === 'A' ? 0 : r.Lin - dv.len, a1 = dv.from === 'A' ? dv.len : r.Lin;
+      poly([P(a0, zAt(dv, a0)), P(a1, zAt(dv, a1)), P(a1, zAt(dv, a1) + t), P(a0, zAt(dv, a0) + t)], 'div');
+    }
+    // leg fronts/backs at each end
+    const edge = (k, end) => { let z = 0; for (let j = 0; j < k; j++) z += (end === 'A' ? r.legs[j].hA : r.legs[j].hB) + t; return [z, z + (end === 'A' ? r.legs[k].hA : r.legs[k].hB)]; };
+    for (const df of r.defl) {
+      const a = df.at === 'A' ? 0 : r.Lin, sgn = df.at === 'A' ? 1 : -1;
+      const zf = edge(df.i, df.at)[0], zb = edge(df.i + 1, df.at)[1];
+      poly([P(a, zf), P(a + sgn * df.s, zf), P(a, zf + df.s)], 'div');
+      poly([P(a, zb), P(a + sgn * df.s, zb), P(a, zb - df.s)], 'div');
+    }
+    // centre of the path
+    const mid = (k, end) => { const e = edge(k, end); return (e[0] + e[1]) / 2; };
+    const pts = [P(0, mid(0, 'A'))];
+    r.turns.forEach((x) => {
+      const a = x.at === 'B' ? r.Lin - x.gap / 2 : x.gap / 2;
+      pts.push(P(a, mid(x.i, x.at)), P(a, mid(x.i + 1, x.at)));
+    });
+    const lastK = r.legs.length - 1, mEnd = r.mouthEnd;
+    const aMouthEnd = mEnd === 'A' ? 0 : r.Lin;
+    if (r.mouthBack) {
+      const am = mEnd === 'A' ? r.mouthH / 2 : r.Lin - r.mouthH / 2;
+      pts.push(P(am, mid(lastK, mEnd)), P(am, r.Din + t));
+      const o0 = P(mEnd === 'A' ? 0 : r.Lin - r.mouthH, r.Din), o1 = P(mEnd === 'A' ? r.mouthH : r.Lin, r.Din + t);
+      svg.append(sv('rect', { x: Math.min(o0[0], o1[0]), y: Math.min(o0[1], o1[1]), width: Math.abs(o1[0] - o0[0]), height: Math.abs(o1[1] - o0[1]), class: 'mouth' }));
+    } else {
+      const e = edge(lastK, mEnd);
+      pts.push(P(aMouthEnd + (mEnd === 'A' ? -t : t), mid(lastK, mEnd)));
+      const o0 = P(aMouthEnd, e[0]), o1 = P(aMouthEnd + (mEnd === 'A' ? -t : t), e[1]);
+      svg.append(sv('rect', { x: Math.min(o0[0], o1[0]), y: Math.min(o0[1], o1[1]), width: Math.abs(o1[0] - o0[0]), height: Math.abs(o1[1] - o0[1]), class: 'mouth' }));
+    }
+    svg.append(sv('polyline', { points: pts.map(p => p.join(',')).join(' '), class: 'path' }));
+    // driver on the front baffle
+    const p = drvc().params, dd = p.dia > 0 ? p.dia : 2 * Math.sqrt(p.sd / Math.PI) * 1.18;
+    const d0 = P(Math.max(0, r.drvAlong - dd / 2), -t), d1 = P(Math.min(r.Lin, r.drvAlong + dd / 2), 0);
+    svg.append(sv('rect', { x: Math.min(d0[0], d1[0]), y: Math.min(d0[1], d1[1]), width: Math.abs(d1[0] - d0[0]), height: Math.abs(d1[1] - d0[1]), class: 'drv' }));
+    const fs = Math.max(Wv, Hv) * 0.035;
+    const lab = (x, y, txt, anchor) => svg.append(sv('text', { x, y, 'font-size': fs, 'text-anchor': anchor || 'middle' }, txt));
+    lab(Wv / 2, -pad * 0.35, U.fmt('len', Wv) + (vert ? ' deep' : ' wide'));
+    { const x = -pad * 0.4, tx = sv('text', { x, y: Hv / 2, 'font-size': fs, 'text-anchor': 'middle', transform: `rotate(-90 ${x} ${Hv / 2})` }, U.fmt('len', Hv) + (vert ? ' tall' : ' deep')); svg.append(tx); }
+    lab(Wv / 2, Hv + pad * 0.6, vert ? 'front ← | → back' : 'front (bottom of this view)');
+    return svg;
+  }
+
+  // Area along the path, folded (as simulated) against the straight line.
+  function areaSvg(d) {
+    const L = d.line, fn = E.lineAreaFn(L), st = E.lineAreaFn(Object.assign({}, L, { fold: null }));
+    const N = 400, xs = [], ys = [], y2 = [];
+    for (let i = 0; i <= N; i++) { const x = L.length * i / N; xs.push(x); ys.push(fn(Math.min(x, L.length - 1e-9))); y2.push(st(x)); }
+    const top = Math.max(...ys, ...y2) * 1.1, Wd = 600, Hd = 150, m = 34;
+    const X = (x) => m + (Wd - m - 8) * x / L.length, Y = (y) => Hd - 20 - (Hd - 30) * y / top;
+    const NS = 'http://www.w3.org/2000/svg', sv = (tg, at, txt) => { const e = document.createElementNS(NS, tg); for (const k in at) e.setAttribute(k, at[k]); if (txt) e.textContent = txt; return e; };
+    const svg = sv('svg', { viewBox: `0 0 ${Wd} ${Hd}`, class: 'areasvg', role: 'img', 'aria-label': 'Line area along the path' });
+    svg.append(sv('line', { x1: m, y1: Y(0), x2: Wd - 8, y2: Y(0), class: 'ax' }), sv('line', { x1: m, y1: Y(0), x2: m, y2: 8, class: 'ax' }));
+    svg.append(sv('polyline', { points: xs.map((x, i) => X(x) + ',' + Y(y2[i])).join(' '), class: 'straight' }));
+    svg.append(sv('polyline', { points: xs.map((x, i) => X(x) + ',' + Y(ys[i])).join(' '), class: 'fold' }));
+    svg.append(sv('text', { x: m + 4, y: 16 }, 'Area along the path: folded (as simulated, solid) and straight (dashed)'));
+    svg.append(sv('text', { x: m, y: Hd - 4 }, 'closed end'), sv('text', { x: Wd - 8, y: Hd - 4, 'text-anchor': 'end' }, 'mouth, ' + U.fmt('len', L.length)));
+    svg.append(sv('text', { x: m + 4, y: Y(ys[0]) - 6 }, U.fmt('area', ys[0])));
+    return svg;
+  }
+
+  // Cut list for a folded line (butt joints: sides full size, the rest between them).
+  function foldCutList(d) {
+    const r = G.lineFold(d), t = r.t, e = r.ext, vert = r.fold.legs === 'vertical';
+    const list = [];
+    // the two panels that show the fold (the "sides" of the path) are full size
+    if (vert) {
+      list.push({ name: 'Side (shows the fold)', qty: 2, a: e.H, b: e.D });
+      list.push({ name: 'Front baffle', qty: 1, a: e.H - 2 * t, b: e.W - 2 * t });
+      list.push({ name: 'Back', qty: 1, a: e.H - 2 * t, b: e.W - 2 * t });
+      list.push({ name: 'Top and bottom', qty: 2, a: e.W - 2 * t, b: e.D - 2 * t });
+    } else {
+      list.push({ name: 'Top and bottom (show the fold)', qty: 2, a: e.W, b: e.D });
+      list.push({ name: 'Front baffle', qty: 1, a: e.W, b: e.H - 2 * t });
+      list.push({ name: 'Back', qty: 1, a: e.W, b: e.H - 2 * t });
+      list.push({ name: 'Ends', qty: 2, a: e.H - 2 * t, b: e.D - 2 * t });
+    }
+    r.dividers.forEach((dv, i) => list.push({ name: 'Divider ' + (i + 1) + (Math.abs(r.lean[i]) > 0.05 ? ' (leans ' + Math.abs(r.lean[i]).toFixed(1) + '°)' : ''), qty: 1, a: dv.len, b: r.w }));
+    if (r.defl.length) {
+      const by = {};
+      for (const x of r.defl) { const k = x.s.toFixed(4); by[k] = (by[k] || 0) + 2; }
+      for (const [s, q] of Object.entries(by)) list.push({ name: '45° corner block, ' + U.fmt('len', +s) + ' legs', qty: q, a: r.w, b: +s, tri: true });
+    }
+    return { r, list };
+  }
+
   function lineCard() {
     const d = S.design, L = d.line;
     const kids = [
@@ -2143,8 +2297,35 @@
       const a = E.lineAreas(L);
       return 'Resonances ' + q.map(x => x.toFixed(0)).join(', ') + ' Hz · area ' + U.fmt('area', a.s0) + ' → ' + U.fmt('area', a.sL);
     }, 'hint'));
-    kids.push(h('p', { class: 'hint' }, 'The line is modelled as a stepped tube (48 segments). Stuffing uses a simplified loss model, so treat damping results as a guide.'));
+    kids.push(h('p', { class: 'hint' }, 'The line is modelled as a stepped tube (48 segments; more when folded, to follow each turn). Stuffing uses a simplified loss model, so treat damping results as a guide.'));
     return card(d.type === 'pipe' ? 'Pipe' : 'Line', ...kids);
+  }
+
+  function foldBuildCard(d) {
+    const host = h('div');
+    const fill = () => {
+      const { r, list } = foldCutList(d);
+      const sz = (m) => U.system === 'imperial' ? GL.util.inchFraction(m) : (m * 100).toFixed(1) + ' cm';
+      host.innerHTML = '';
+      host.append(foldSvg(d), areaSvg(d),
+        h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Panel'), h('th', null, 'Qty'), h('th', null, 'Size'))),
+          h('tbody', null, list.map(p => h('tr', null, h('th', null, p.name), h('td', null, p.qty),
+            h('td', null, p.tri ? sz(p.b) + ' × ' + sz(p.b) + ' triangle (cut a square strip corner to corner), ' + sz(p.a) + ' long' : sz(p.a) + ' × ' + sz(p.b)))))),
+        h('p', { class: 'hint' }, 'Outside ' + ['W', 'H', 'D'].map(k => sz(r.ext[k])).join(' × ') + ' (W × H × D), ' + sz(r.t) + ' panels, butt joints. ' +
+          'Legs along the path: ' + r.legs.map((g, i) => (i + 1) + ': ' + sz(g.len) + ' long, ' + sz(g.hA) + (Math.abs(g.hA - g.hB) > 1e-4 ? ' → ' + sz(g.hB) : '') + ' deep').join('; ') + '. ' +
+          'Turn gaps ' + r.turns.map(x => sz(x.gap)).join(', ') + '. ' +
+          r.dividers.map((dv, i) => 'Divider ' + (i + 1) + ': ' + sz(dv.zA) + ' behind the front at the ' + endName(r, 'A') + ', ' + sz(dv.zB) + ' at the ' + endName(r, 'B') + ', fixed to the ' + endName(r, dv.from) + '.').join(' ') +
+          ' Driver centre ' + sz(r.drvAlong) + ' from the closed end, on the front baffle. Mouth ' + U.fmt('area', r.w * r.mouthH) + (r.mouthBack ? ' in the back panel at the ' + endName(r, r.mouthEnd) : ' through the ' + endName(r, r.mouthEnd) + ' panel') + '.'),
+        r.warn.length ? h('p', { class: 'hint warnline' }, r.warn.join(' ')) : null);
+    };
+    fill(); live.push(fill);
+    return card('Folded line: side view and cut list', host);
+  }
+  function endName(r, end) {
+    const f = r.fold, first = f.start === 'top';
+    const isTop = (end === 'A') === first;
+    return f.legs === 'vertical' ? (isTop ? 'top' : 'bottom') : (isTop ? 'left end' : 'right end');
   }
 
   function buildPanel(part = 'side') {
@@ -2156,7 +2337,8 @@
           const l = G.lineLayout(d);
           return 'Air inside the line: ' + U.volBoth(l.air) + (l.rearGross ? ' · rear chamber gross ' + U.fmt('vol', l.rearGross) : '');
         }, 'live'),
-        h('p', { class: 'hint' }, 'Lines are shown straight. Folding a line keeps its length and areas; measure length along the centre of the path.'))];
+        h('p', { class: 'hint' }, folded(d) ? 'Folded as set on the Enclosure tab.' : 'A straight line. A rectangular transmission line can be folded into a box on the Enclosure tab (Folding).'))]
+        .concat(folded(d) ? [foldBuildCard(d)] : []);
     }
     const n = d.chambers.length;
     const lay = () => G.layout(d, b);
@@ -3076,12 +3258,13 @@
     if (view) {
       if (R.layout) view.update({ kind: 'box', design: S.design, box: S.box, layout: R.layout, drvc: R.drvc, xray: S.xray, explode: S.explode });
       else if (R.hornLay) view.update({ kind: 'horn', design: S.design, hornLay: R.hornLay, drvc: R.drvc });
-      else view.update({ kind: 'line', design: S.design, lineLay: R.lineLay, drvc: R.drvc });
+      else view.update({ kind: 'line', design: S.design, lineLay: R.lineLay, drvc: R.drvc, fold: folded(S.design) ? G.lineFold(S.design) : null });
     }
     const dimEl = document.getElementById('dims3d');
     dimEl.textContent = R.layout
       ? ['W', 'H', 'D'].map(k => k + ' ' + U.fmt('len', S.box.ext[k])).join(' · ')
       : R.hornLay ? 'Horn path ' + U.fmt('len', R.hornLay.length) + ', shown unfolded'
+      : folded(S.design) ? (() => { const e = G.lineFold(S.design).ext; return ['W', 'H', 'D'].map(k => k + ' ' + U.fmt('len', e[k])).join(' · ') + ' · line ' + U.fmt('len', S.design.line.length) + ' folded'; })()
       : 'Line ' + U.fmt('len', S.design.line.length);
     document.getElementById('title').textContent = DRV.library.name(driver()) + ' · ' + E.typeName(S.design.type);
   }

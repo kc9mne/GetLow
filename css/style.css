@@ -249,6 +249,20 @@ body.dropping .dropmask {
 /* room modes and placement */
 .roommap { margin: 6px 0 4px; }
 .roomcap { text-align: center; font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+.foldsvg { display: block; width: 100%; max-height: 520px; margin-bottom: 8px; }
+.foldsvg .wall { fill: #c9a26b; stroke: #5b4426; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.foldsvg .airin { fill: var(--surface-1, #fff); }
+.foldsvg .div { fill: #c9a26b; stroke: #5b4426; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.foldsvg .path { fill: none; stroke: var(--series-1, #c00); stroke-width: 1.5px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.foldsvg .mouth { fill: var(--surface-1, #fff); stroke: var(--series-1, #c00); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+.foldsvg .drv { fill: #2a2a2a; }
+.foldsvg text { fill: var(--text-primary, #222); }
+.voltable tr.on th, .voltable tr.on td { font-weight: 600; }
+.areasvg { display: block; width: 100%; margin-bottom: 8px; font-size: 11px; }
+.areasvg .ax { stroke: var(--text-muted, #888); stroke-width: 1px; }
+.areasvg .fold { fill: none; stroke: var(--series-1, #c00); stroke-width: 1.5px; }
+.areasvg .straight { fill: none; stroke: var(--text-muted, #888); stroke-width: 1px; stroke-dasharray: 4 3; }
+.areasvg text { fill: var(--text-muted, #666); }
 .roomsvg { display: block; width: 100%; max-height: 360px; }
 .roomsvg .cell { fill: var(--series-1); stroke: var(--surface-1); stroke-width: 1px; vector-effect: non-scaling-stroke; cursor: pointer; }
 .roomsvg .cell:hover { stroke: var(--text-primary); }

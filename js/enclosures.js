@@ -273,6 +273,53 @@
     if (line.shape === 'round') return { s0: Math.PI * line.d0 * line.d0 / 4, sL: Math.PI * line.dL * line.dL / 4 };
     return { s0: line.width * line.h0, sL: line.width * line.hL };
   }
+  // Area along a line, as a function of the distance x from the closed end (m).
+  // A folded line (rectangular, type tl) follows its legs (stepped when the dividers
+  // are parallel) and each turn: the area across a corner's diagonal grows to about
+  // √2 times, less what a 45° corner block takes off, dips to the turn gap at the
+  // middle of the turn, then grows again at the second corner (see "Folding a
+  // transmission line", A. Rubino). A mouth in the back panel adds one 90° corner.
+  function lineAreaFn(line) {
+    const { s0, sL } = lineAreas(line);
+    const Ln = line.length;
+    const straight = (x) => s0 + (sL - s0) * Math.min(1, Math.max(0, x / Ln));
+    const f = line.fold;
+    if (!(line.shape === 'rect' && f && f.n > 0 && GL.geometry)) return straight;
+    const r = GL.geometry.lineFold({ line });
+    const w = r.w;
+    // where each leg starts along the path
+    const starts = [];
+    let x = 0;
+    r.legs.forEach((g, k) => { starts.push(x); x += g.len + (k < r.turns.length ? r.turns[k].pitch : 0); });
+    const base = (xx) => {
+      if (f.dividers !== 'parallel') return straight(xx);
+      let k = 0;
+      while (k < r.legs.length - 1 && xx >= starts[k + 1]) k++;
+      return w * (r.legs[k].h0 + r.legs[k].h1) / 2;
+    };
+    const bends = [];      // [x0, x1, area(x)] pieces that replace the base
+    const lin = (xa, ya, xb, yb) => (xx) => ya + (yb - ya) * (xx - xa) / (xb - xa);
+    r.turns.forEach((tn, i) => {
+      const a = r.legs[i], b = r.legs[i + 1];
+      const ha = tn.at === 'A' ? a.hA : a.hB, hb = tn.at === 'A' ? b.hA : b.hB;
+      const s = (r.defl.find(d => d.i === i) || { s: 0 }).s;
+      const c1 = starts[i] + a.len, c2 = c1 + tn.pitch, mid = (c1 + c2) / 2;
+      const pk1 = w * Math.max(ha, Math.hypot(tn.gap, ha) - s / Math.SQRT2);
+      const pk2 = w * Math.max(hb, Math.hypot(tn.gap, hb) - s / Math.SQRT2);
+      const g = w * tn.gap;
+      const x0 = c1 - ha / 2, x3 = c2 + hb / 2;
+      const y0 = base(x0), y3 = base(x3);
+      bends.push([x0, c1, lin(x0, y0, c1, pk1)], [c1, mid, lin(c1, pk1, mid, g)], [mid, c2, lin(mid, g, c2, pk2)], [c2, x3, lin(c2, pk2, x3, y3)]);
+    });
+    if (r.mouthBack) {
+      const hm = r.mouthH, x0 = Ln - hm / 2;
+      bends.push([x0, Ln + 1e-9, lin(x0, base(x0), Ln, w * hm * Math.SQRT2)]);
+    }
+    return (xx) => {
+      for (const [p, q, fn] of bends) if (xx >= p && xx < q) return fn(xx);
+      return base(xx);
+    };
+  }
   // Closed-open pipe resonances with mouth end correction.
   function quarterWave(line, n) {
     const { sL } = lineAreas(line);
@@ -496,11 +543,14 @@
     if (design.line) {
       const L = design.line;
       const { s0, sL } = lineAreas(L);
-      const N = L.segments || 48;
+      const area = lineAreaFn(design.type === 'tl' ? L : Object.assign({}, L, { fold: null }));
+      // a folded line needs short segments to follow its turns
+      const folded = design.type === 'tl' && L.shape === 'rect' && L.fold && L.fold.n > 0;
+      const N = folded ? Math.min(160, Math.max(L.segments || 48, Math.ceil(L.length / (Math.min(L.h0, L.hL) / 4)))) : (L.segments || 48);
       const ln = [];
       for (let i = 0; i <= N; i++) ln.push(net.node('Line ' + i));
       for (let i = 0; i < N; i++) {
-        const S = s0 + (sL - s0) * (i + 0.5) / N;
+        const S = area((i + 0.5) / N * L.length);
         net.add(el.tube(ln[i], ln[i + 1], S, L.length / N, lineLoss(S, L.stuffing)));
       }
       const m = net.add(el.mouth(ln[N], sL, L.mouthFlanged));
@@ -554,6 +604,6 @@
     FLARES, SPACES, spaceOmega, makeSection, segSections, hornSegments, hornProfile, hornVolume, hornLength, hornMouth,
     idealMouth, hornFromCutoff, solveU,
     portArea, portEnd, portMass, portFb, lenForFb, portSpeedLimits, quietSize, flareLen, slotEdges, portProfile, portDisplacement, prMech, prFb, addedForFb,
-    lineAreas, quarterWave, cab, helmholtz,
+    lineAreas, lineAreaFn, quarterWave, cab, helmholtz,
   };
 })(window.GL);

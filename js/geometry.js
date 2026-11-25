@@ -307,5 +307,76 @@
     return { s0, sL, air, rearGross, quarter: E().quarterWave(L, 4) };
   }
 
-  GL.geometry = { MATERIALS, KEYS, BRACES, defaultBraces, braceVolume, chamberSize, defaultBox, walls, internal, displacements, layout, solveDims, applyRatio, slotFullHeight, lineLayout, hornLayout };
+  // Folded transmission line: the line's legs side by side in a box, front to back,
+  // leg 1 behind the front baffle (the driver is on it). Lengths are measured along
+  // the centre of the path: each leg to the middle of its turn, plus the step across.
+  //   fold: { n, legs: 'vertical'|'horizontal', start: 'top'|'bottom', dividers: 'angled'|'parallel',
+  //           gap (turn gap / line height), mouth: 'back'|'end', deflect, t (wall and divider thickness) }
+  const FOLD_DEFAULT = { n: 0, legs: 'vertical', start: 'top', dividers: 'angled', gap: 1, mouth: 'back', deflect: true, t: 0.75 * IN };
+  function lineFold(design) {
+    const L = design.line;
+    const f = Object.assign({}, FOLD_DEFAULT, L.fold || {});
+    const n = Math.max(0, Math.round(f.n)), legs = n + 1, t = f.t, w = L.width;
+    const hAt = (u) => L.h0 + (L.hL - L.h0) * Math.min(1, Math.max(0, u));
+    // each leg's height at its start and end (along the path)
+    const leg = [];
+    for (let k = 0; k < legs; k++) {
+      const u0 = k / legs, u1 = (k + 1) / legs;
+      const par = f.dividers === 'parallel' ? hAt((u0 + u1) / 2) : null;
+      leg.push({ k, h0: par ?? hAt(u0), h1: par ?? hAt(u1), fromA: k % 2 === 0 });
+    }
+    // height of each leg at end A (where the line starts) and end B
+    for (const g of leg) { g.hA = g.fromA ? g.h0 : g.h1; g.hB = g.fromA ? g.h1 : g.h0; g.avg = (g.h0 + g.h1) / 2; }
+    const sumA = leg.reduce((s, g) => s + g.hA, 0), sumB = leg.reduce((s, g) => s + g.hB, 0);
+    const Din = Math.max(sumA, sumB) + n * t;
+    // the back leg takes up any difference so the back wall is square
+    const last = leg[legs - 1];
+    last.hA += Din - n * t - sumA; last.hB += Din - n * t - sumB;
+    const turns = [];
+    for (let i = 0; i < n; i++) {
+      const u = (i + 1) / legs;
+      const at = leg[i].fromA ? 'B' : 'A';
+      const hT = at === 'B' ? leg[i].hB : leg[i].hA;
+      turns.push({ i, at, gap: f.gap * hT, pitch: (leg[i].avg + leg[i + 1].avg) / 2 + t, u });
+    }
+    const mouthEnd = last.fromA ? 'B' : 'A';
+    const mouthBack = f.mouth === 'back' && n > 0;
+    const sumGap = turns.reduce((s, x) => s + x.gap, 0), sumPitch = turns.reduce((s, x) => s + x.pitch, 0);
+    // path = (n+1)·Lin − Σgap + Σpitch (− half the mouth opening when it is in the back panel)
+    const Lin = (L.length + sumGap - sumPitch + (mouthBack ? L.hL / 2 : 0)) / legs;
+    // leg path lengths
+    for (const g of leg) {
+      let len = Lin;
+      for (const x of turns) if (x.i === g.k || x.i === g.k - 1) len -= x.gap / 2;
+      if (mouthBack && g === last) len -= L.hL / 2;
+      g.len = len;
+    }
+    // dividers: between leg i and i+1, fixed to the wall at the far end from their turn
+    let zA = 0, zB = 0;
+    const dividers = turns.map(x => {
+      zA += leg[x.i].hA; zB += leg[x.i].hB;
+      const d = { i: x.i, len: Lin - x.gap, from: x.at === 'B' ? 'A' : 'B', zA, zB };
+      zA += t; zB += t;
+      return d;
+    });
+    const lean = dividers.map(d => Math.atan2(d.zB - d.zA, Lin) * 180 / Math.PI);
+    // 45° corner blocks in the two outer corners of each turn
+    const defl = f.deflect ? turns.map(x => {
+      const s = 0.5 * Math.min(x.gap, leg[x.i].avg, leg[x.i + 1].avg);
+      return { at: x.at, i: x.i, s };
+    }) : [];
+    const deflVol = defl.reduce((s, d) => s + 2 * w * d.s * d.s / 2, 0);
+    const divVol = dividers.reduce((s, d) => s + d.len * w * t, 0);
+    const air = Lin * w * Din - divVol - deflVol;
+    const inside = f.legs === 'vertical' ? { W: w, H: Lin, D: Din } : { W: Lin, H: w, D: Din };
+    const ext = { W: inside.W + 2 * t, H: inside.H + 2 * t, D: inside.D + 2 * t };
+    const drvAlong = L.drvPos * L.length;
+    const warn = [];
+    if (Lin < 2 * Math.max(...leg.map(g => Math.max(g.hA, g.hB)), 0) || leg.some(g => g.len <= 0)) warn.push('Too many folds for this length: the legs are shorter than the line is wide.');
+    if (n > 0 && drvAlong > leg[0].len) warn.push('The driver sits past the first turn; it has to be on the first leg, behind the front baffle. Move it nearer the closed end.');
+    return { n, legs: leg, turns, dividers, lean, defl, Lin, Din, w, t, inside, ext, air, mouthEnd, mouthBack, mouthH: L.hL,
+      drvAlong, fold: f, warn, path: leg.reduce((s, g) => s + g.len, 0) + sumPitch };
+  }
+
+  GL.geometry = { MATERIALS, KEYS, BRACES, defaultBraces, braceVolume, chamberSize, defaultBox, walls, internal, displacements, layout, solveDims, applyRatio, slotFullHeight, lineLayout, hornLayout, lineFold, FOLD_DEFAULT };
 })(window.GL);

@@ -301,6 +301,7 @@
     }
 
     buildLine({ design, lineLay, drvc }) {
+      if (arguments[0].fold) return this.buildFold(arguments[0]);
       const L = design.line;
       const len = L.length;
       const p = drvc.params;
@@ -343,6 +344,66 @@
       }
     }
   }
+
+  // Folded transmission line: walls see-through, dividers, 45° corner blocks, driver and mouth.
+  // a runs along the legs from the closed end's end wall, z back from the inside of the front.
+  BoxView.prototype.buildFold = function ({ design, drvc, fold: r }) {
+    const f = r.fold, t = r.t, w = r.w, vert = f.legs === 'vertical', flip = f.start === 'bottom';
+    this.fit(Math.max(r.ext.W, r.ext.H, r.ext.D));
+    const M = (a, z, u) => {
+      const aa = (flip ? -1 : 1) * (a - r.Lin / 2), zz = r.Din / 2 - z;
+      return vert ? new THREE.Vector3(u, -aa, zz) : new THREE.Vector3(aa, u, zz);
+    };
+    // a convex outline in (a, z), extruded across the width from u0 to u1
+    const solid = (pts, u0, u1, color, opacity) => {
+      const pos = [];
+      const P = (i, u) => M(pts[i][0], pts[i][1], u);
+      const tri = (p, q, s2) => pos.push(p.x, p.y, p.z, q.x, q.y, q.z, s2.x, s2.y, s2.z);
+      for (let i = 1; i < pts.length - 1; i++) { tri(P(0, u0), P(i, u0), P(i + 1, u0)); tri(P(0, u1), P(i + 1, u1), P(i, u1)); }
+      for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; tri(P(i, u0), P(j, u0), P(j, u1)); tri(P(i, u0), P(j, u1), P(i, u1)); }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color, roughness: 0.85, side: THREE.DoubleSide, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }));
+      m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), new THREE.LineBasicMaterial({ color: 0x5b4426, transparent: true, opacity: 0.6 })));
+      this.group.add(m);
+    };
+    const rect = (a0, a1, z0, z1) => [[a0, z0], [a1, z0], [a1, z1], [a0, z1]];
+    const hw = w / 2, op = 0.22;
+    // outer walls: the two that show the fold, front, back, and the two ends
+    solid(rect(-t, r.Lin + t, -t, r.Din + t), -hw - t, -hw, WOOD, op);
+    solid(rect(-t, r.Lin + t, -t, r.Din + t), hw, hw + t, WOOD, op);
+    solid(rect(0, r.Lin, -t, 0), -hw, hw, WOOD, op);
+    solid(rect(0, r.Lin, r.Din, r.Din + t), -hw, hw, WOOD, op);
+    solid(rect(-t, 0, -t, r.Din + t), -hw, hw, WOOD, op);
+    solid(rect(r.Lin, r.Lin + t, -t, r.Din + t), -hw, hw, WOOD, op);
+    // dividers
+    const zAt = (dv, a) => dv.zA + (dv.zB - dv.zA) * a / r.Lin;
+    for (const dv of r.dividers) {
+      const a0 = dv.from === 'A' ? 0 : r.Lin - dv.len, a1 = dv.from === 'A' ? dv.len : r.Lin;
+      solid([[a0, zAt(dv, a0)], [a1, zAt(dv, a1)], [a1, zAt(dv, a1) + t], [a0, zAt(dv, a0) + t]], -hw, hw, WOOD, 1);
+    }
+    // corner blocks
+    const edge = (k, end) => { let z = 0; for (let j = 0; j < k; j++) z += (end === 'A' ? r.legs[j].hA : r.legs[j].hB) + t; return [z, z + (end === 'A' ? r.legs[k].hA : r.legs[k].hB)]; };
+    for (const df of r.defl) {
+      const a = df.at === 'A' ? 0 : r.Lin, sg = df.at === 'A' ? 1 : -1;
+      const zf = edge(df.i, df.at)[0], zb = edge(df.i + 1, df.at)[1];
+      solid([[a, zf], [a + sg * df.s, zf], [a, zf + df.s]], -hw, hw, WOOD, 1);
+      solid([[a, zb], [a, zb - df.s], [a + sg * df.s, zb]], -hw, hw, WOOD, 1);
+    }
+    // mouth
+    const last = r.legs.length - 1, mEnd = r.mouthEnd;
+    if (r.mouthBack) {
+      const a0 = mEnd === 'A' ? 0 : r.Lin - r.mouthH, a1 = a0 + r.mouthH;
+      solid(rect(a0, a1, r.Din + t, r.Din + t + 0.002), -hw, hw, DARK, 1);
+    } else {
+      const e = edge(last, mEnd), a = mEnd === 'A' ? -t - 0.002 : r.Lin + t;
+      solid(rect(a, a + 0.002, e[0], e[1]), -hw, hw, DARK, 1);
+    }
+    // driver on the front baffle, over the first leg
+    const p = drvc.params, rd = Math.min(p.dia > 0 ? p.dia / 2 : Math.sqrt(p.sd / Math.PI) * 1.18, hw);
+    this.driver(M(r.drvAlong, -t, 0), new THREE.Vector3(0, 0, 1), rd);
+  };
 
   // Horn shown unfolded along +x: throat at the left, mouth at the right.
   BoxView.prototype.buildHorn = function ({ design, hornLay, drvc }) {

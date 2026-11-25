@@ -3,8 +3,14 @@
 (function () {
   'use strict';
   const GL = window.GL = window.GL || {};
-  GL.VERSION = '1.1.1';
+  GL.VERSION = '1.1.2';
   GL.CHANGES = [
+    { v: '1.1.2', date: '2026-11-25', items: [
+      'Fold a transmission line into a box (Enclosure tab, Folding): legs up and down or side to side, angled or parallel dividers, turn gaps, 45° corner blocks, mouth in the back or end panel.',
+      'A table of outside sizes for straight up to 5 folds, to pick one that fits.',
+      'The simulation follows the area change through each turn (larger across the corners, the gap mid-turn), so a folded line is simulated as built.',
+      'Build tab: side view of the fold with the path, a chart of the area along it, and the cut list with divider positions and angles. The 3D view shows the folded box.',
+    ] },
     { v: '1.1.1', date: '2026-11-24', items: [
       'Add a driver from the start page (paste specs or a .wdr file), or from New project when it isn\'t listed: it is picked for you.',
       'Subwoofers can be 5.25" and 6.5" in New project.',
