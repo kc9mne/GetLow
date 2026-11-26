@@ -15,13 +15,16 @@
     { id: 'bp6s',   name: '6th order bandpass – series tuned' },
     { id: 'bp8',    name: '8th order bandpass' },
     { id: 'tl',     name: 'Transmission line / quarter-wave' },
+    { id: 'mltl',   name: 'Mass-loaded transmission line (MLTL)' },
     { id: 'pipe',   name: 'Pipe / tube (front loaded)' },
     { id: 'blh',    name: 'Back-loaded horn' },
     { id: 'flh',    name: 'Front-loaded horn' },
     { id: 'th',     name: 'Tapped horn' },
   ];
   const typeName = (id) => (TYPES.find(t => t.id === id) || {}).name || id;
-  const isLine = (type) => type === 'tl' || type === 'pipe';
+  const isLine = (type) => type === 'tl' || type === 'mltl' || type === 'pipe';
+  // a line behind the driver (plain or mass-loaded): these fold
+  const isTL = (type) => type === 'tl' || type === 'mltl';
   // bandpass family: F3 measured against the peak, with an upper roll-off
   const isBandpass = (type) => /^bp/.test(type) || type === 'manifold';
   const isHorn = (type) => type === 'blh' || type === 'flh' || type === 'th';
@@ -279,13 +282,13 @@
   // √2 times, less what a 45° corner block takes off, dips to the turn gap at the
   // middle of the turn, then grows again at the second corner (see "Folding a
   // transmission line", A. Rubino). A mouth in the back panel adds one 90° corner.
-  function lineAreaFn(line) {
+  function lineAreaFn(line, type) {
     const { s0, sL } = lineAreas(line);
     const Ln = line.length;
     const straight = (x) => s0 + (sL - s0) * Math.min(1, Math.max(0, x / Ln));
     const f = line.fold;
     if (!(line.shape === 'rect' && f && f.n > 0 && GL.geometry)) return straight;
-    const r = GL.geometry.lineFold({ line });
+    const r = GL.geometry.lineFold({ line, type });
     const w = r.w;
     // where each leg starts along the path
     const starts = [];
@@ -312,7 +315,7 @@
       bends.push([x0, c1, lin(x0, y0, c1, pk1)], [c1, mid, lin(c1, pk1, mid, g)], [mid, c2, lin(mid, g, c2, pk2)], [c2, x3, lin(c2, pk2, x3, y3)]);
     });
     if (r.mouthBack) {
-      const hm = r.mouthH, x0 = Ln - hm / 2;
+      const hm = r.port ? line.hL : r.mouthH, x0 = Ln - r.mouthH / 2;
       bends.push([x0, Ln + 1e-9, lin(x0, base(x0), Ln, w * hm * Math.SQRT2)]);
     }
     return (xx) => {
@@ -320,12 +323,56 @@
       return base(xx);
     };
   }
-  // Closed-open pipe resonances with mouth end correction.
+  // MLTL tuning: the lowest resonance of a closed line (mean area S, length L)
+  // (a port set a little up from the end is treated as at the end: close enough
+  // for the tuning; the simulation itself puts it where it is)
+  // ended by the port's acoustic mass Ma, where ω·Ma = (ρc/S)·cot(kL). With no
+  // port it is the plain quarter wave; with a small port it tends to the
+  // Helmholtz tuning of the line's volume.
+  function mltlTuning(line, port) {
+    const pt = port || line.port;
+    const { s0, sL } = lineAreas(line);
+    const S = (s0 + sL) / 2, Ln = line.length, Ma = portMass(pt), c = phys.c;
+    const g = (f) => { const w = 2 * Math.PI * f; return w * Ma - (phys.rho * c / S) / Math.tan(w * Ln / c); };
+    let lo = 1e-3, hi = c / (4 * Ln) * 0.999999;
+    for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (g(m) > 0) hi = m; else lo = m; }
+    return (lo + hi) / 2;
+  }
+  // Port length that tunes an MLTL to f (0 when even no length is low enough).
+  function mltlPortLen(line, f) {
+    const pt = Object.assign({}, line.port);
+    let lo = 0, hi = line.length * 4;
+    pt.len = lo; if (mltlTuning(line, pt) <= f) return 0;
+    for (let i = 0; i < 60; i++) { pt.len = (lo + hi) / 2; if (mltlTuning(line, pt) > f) lo = pt.len; else hi = pt.len; }
+    return (lo + hi) / 2;
+  }
+
+  // Length scale factor for a tapered line (M. J. King, "Classic Transmission
+  // Line Enclosure Alignments", 2021, table 1): L = SF·c/(4·fb), TR = SL/S0.
+  const KING_SF = [[0.1, 0.62], [0.2, 0.71], [0.33, 0.80], [0.5, 0.87], [1, 1], [2, 1.14], [3, 1.22], [5, 1.32], [10, 1.42]];
+  function taperSF(tr) {
+    const x = Math.log(Math.min(10, Math.max(0.1, tr)));
+    for (let i = 1; i < KING_SF.length; i++) {
+      const [a, fa] = KING_SF[i - 1], [b, fb] = KING_SF[i];
+      if (x <= Math.log(b) + 1e-12) return fa + (fb - fa) * (x - Math.log(a)) / (Math.log(b) - Math.log(a));
+    }
+    return 1.42;
+  }
+  // King's method: a TL from a ported box's volume and tuning, for taper ratio TR.
+  function tlFromAlignment(vb, fb, tr) {
+    const L = taperSF(tr) * phys.c / (4 * fb);
+    const s0 = vb / (0.5 * (1 + tr) * L);
+    return { length: L, s0, sL: tr * s0 };
+  }
+  // Closed-open pipe resonances with mouth end correction. The fundamental of a
+  // tapered line follows King's scale factor; the overtones are left as odd
+  // multiples of a straight line's (only a guide: the simulation has them exactly).
   function quarterWave(line, n) {
-    const { sL } = lineAreas(line);
+    const { s0, sL } = lineAreas(line);
     const corr = (line.mouthFlanged ? 0.8216 : 0.6133) * Math.sqrt(sL / Math.PI);
     const out = [];
-    for (let k = 1; k <= (n || 4); k++) out.push((2 * k - 1) * phys.c / (4 * (line.length + corr)));
+    const sf = s0 > 0 ? taperSF(sL / s0) : 1;
+    for (let k = 1; k <= (n || 4); k++) out.push((2 * k - 1) * phys.c / (4 * (line.length + corr)) * (k === 1 ? sf : 1));
     return out;
   }
   // Simple stuffing model: extra attenuation rising with frequency and a
@@ -444,7 +491,25 @@
         D.mount = { rear: 'line', front: 'out' };
         D.line = { shape: 'rect', length: L, width, h0: s0 / width, hL: sL / width,
           d0: Math.sqrt(4 * s0 / Math.PI), dL: Math.sqrt(4 * sL / Math.PI),
-          drvPos: 0.2, stuffing: 0.3, mouthFlanged: true, segments: 48 };
+          drvPos: 0.2, stuffing: 0.3, stuffTo: 0.75, mouthFlanged: true, segments: 48 };
+        break;
+      }
+      case 'mltl': {
+        // B. Brines's straight MLTL (via Neurochrome): a line 4·Sd in area, the
+        // driver at 0.25 of the length, a port about 0.5·Sd at the bottom, stuffing
+        // in the top half; line and port tuned a little below Fs, the line about
+        // 2.5 times shorter than a quarter wave there
+        const S = sdT * 4, fb = clamp(fs * 0.85, 18, 120);
+        const width = roundIn(Math.sqrt(S / 1.3), 0.25);
+        D.mount = { rear: 'line', front: 'out' };
+        D.line = { shape: 'rect', length: phys.c / (4 * fb * 2.5), width, h0: S / width, hL: S / width,
+          d0: Math.sqrt(4 * S / Math.PI), dL: Math.sqrt(4 * S / Math.PI),
+          drvPos: 0.25, stuffing: 0.3, stuffTo: 0.5, mouthFlanged: true, segments: 48 };
+        const pt = makePort('End port', 'line', 'out', sdT * 0.5);
+        pt.d = Math.sqrt(4 * sdT * 0.5 / Math.PI);
+        pt.at = 0;
+        D.line.port = pt;
+        pt.len = Math.max(0.5 * IN, mltlPortLen(D.line, fb));
         break;
       }
       case 'blh': {
@@ -543,19 +608,32 @@
     if (design.line) {
       const L = design.line;
       const { s0, sL } = lineAreas(L);
-      const area = lineAreaFn(design.type === 'tl' ? L : Object.assign({}, L, { fold: null }));
+      const area = lineAreaFn(isTL(design.type) ? L : Object.assign({}, L, { fold: null }), design.type);
       // a folded line needs short segments to follow its turns
-      const folded = design.type === 'tl' && L.shape === 'rect' && L.fold && L.fold.n > 0;
+      const folded = isTL(design.type) && L.shape === 'rect' && L.fold && L.fold.n > 0;
       const N = folded ? Math.min(160, Math.max(L.segments || 48, Math.ceil(L.length / (Math.min(L.h0, L.hL) / 4)))) : (L.segments || 48);
       const ln = [];
       for (let i = 0; i <= N; i++) ln.push(net.node('Line ' + i));
       for (let i = 0; i < N; i++) {
         const S = area((i + 0.5) / N * L.length);
-        net.add(el.tube(ln[i], ln[i + 1], S, L.length / N, lineLoss(S, L.stuffing)));
+        // stuffing only as far down the line as it is set to go
+        const stuffed = (i + 0.5) / N <= (L.stuffTo ?? 1) + 1e-9;
+        net.add(el.tube(ln[i], ln[i + 1], S, L.length / N, lineLoss(S, stuffed ? L.stuffing : 0)));
       }
-      const m = net.add(el.mouth(ln[N], sL, L.mouthFlanged));
-      model.radiators.push({ label: 'Line mouth', flow: (w, pp) => m.flow(w, pp) });
-      model.ports.push({ el: m, label: 'Line mouth', area: sL, cfg: null, fb: quarterWave(L, 1)[0], mouth: true });
+      if (design.type === 'mltl' && L.port) {
+        // mass-loaded: the line ends in a port, whose air mass lowers the tuning
+        // the port at the end of the line, or on the baffle a little above the
+        // (then closed) end, where it can cancel some of the line's harmonics
+        const pt = L.port, Map = portMass(pt), fb = mltlTuning(L);
+        const at = Math.max(0, Math.min(N, Math.round((1 - (pt.at || 0) / L.length) * N)));
+        const e = net.add(el.port(ln[at], 0, Map, 2 * Math.PI * fb * Map / pt.qp, portArea(pt) * pt.count));
+        model.ports.push({ el: e, label: 'End port', area: portArea(pt) * pt.count, cfg: pt, fb });
+        model.radiators.push({ label: 'End port', kind: 'port', id: pt.id, flow: (w, pp) => e.flow(w, pp) });
+      } else {
+        const m = net.add(el.mouth(ln[N], sL, L.mouthFlanged));
+        model.radiators.push({ label: 'Line mouth', flow: (w, pp) => m.flow(w, pp) });
+        model.ports.push({ el: m, label: 'Line mouth', area: sL, cfg: null, fb: quarterWave(L, 1)[0], mouth: true });
+      }
       nodes.line = ln[Math.min(N - 1, Math.round(L.drvPos * N))];
     }
 
@@ -594,13 +672,13 @@
     const parts = ['Cone rear → ' + nm(design.mount.rear) + (design.mount.rear2 ? ' / ' + nm(design.mount.rear2) : ''), 'cone front → ' + nm(design.mount.front)];
     for (const p of design.ports) parts.push(nm(p.from) + ' → ' + p.name + ' → ' + nm(p.to));
     for (const r of design.prs) parts.push(nm(r.from) + ' → ' + r.name + ' → outside');
-    if (design.line) parts.push('line mouth → outside');
+    if (design.line) parts.push(design.type === 'mltl' && design.line.port ? 'line → end port → outside' : 'line mouth → outside');
     if (design.horn) parts.push((design.horn.attach ? nm(design.horn.attach) + ' → ' : '') + 'horn → mouth → outside');
     return parts.join(' · ');
   }
 
   GL.enclosures = {
-    TYPES, END_CORR, typeName, isLine, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
+    TYPES, END_CORR, typeName, isLine, isTL, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
     FLARES, SPACES, spaceOmega, makeSection, segSections, hornSegments, hornProfile, hornVolume, hornLength, hornMouth,
     idealMouth, hornFromCutoff, solveU,
     portArea, portEnd, portMass, portFb, lenForFb, portSpeedLimits, quietSize, flareLen, slotEdges, portProfile, portDisplacement, prMech, prFb, addedForFb,

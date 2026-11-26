@@ -3,8 +3,14 @@
 (function () {
   'use strict';
   const GL = window.GL = window.GL || {};
-  GL.VERSION = '1.1.2';
+  GL.VERSION = '1.1.3';
   GL.CHANGES = [
+    { v: '1.1.3', date: '2026-11-26', items: [
+      'New enclosure: mass-loaded transmission line (MLTL), a line closed by a port. End port card with "Set port length" for a tuning, the port\'s position up from the end, and Bob Brines\'s straight, narrow-top and wide-top shapes.',
+      'Transmission lines: size one from a ported alignment (Martin J. King\'s method), with his taper length factors; the quarter-wave shown now allows for the taper.',
+      'Lines: stuffing can stop part way down ("Stuffed down to"): the top half for an MLTL, the first three quarters for a TL.',
+      'Paste specs reads "Fo" as Fs (Mark Audio, Madisound).',
+    ] },
     { v: '1.1.2', date: '2026-11-25', items: [
       'Fold a transmission line into a box (Enclosure tab, Folding): legs up and down or side to side, angled or parallel dividers, turn gaps, 45° corner blocks, mouth in the back or end panel.',
       'A table of outside sizes for straight up to 5 folds, to pick one that fits.',

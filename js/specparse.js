@@ -44,7 +44,7 @@
   const RULES = [
     { k: 'pe',     q: 'power', re: /(power|watt).*(rms|continuous|nominal|rated)|(rms|continuous|nominal|rated) power|^pe$|power handling$|^power$/, not: /max|peak|program|music|transient/ },
     { k: '_pmax',  q: 'power', re: /power/ },
-    { k: 'fs',     q: 'freq',  re: /\bfs\b|resonan(t|ce) freq|free.?air res/ },
+    { k: 'fs',     q: 'freq',  re: /\bfs\b|^f[o0]$|^fres$|resonan(t|ce) freq|free.?air res/ },
     { k: 'qts',    q: 'none',  re: /\bqts\b|total q\b/ },
     { k: 'qes',    q: 'none',  re: /\bqes\b|electr\w* q\b/ },
     { k: 'qms',    q: 'none',  re: /\bqms\b|mechanical q\b/ },

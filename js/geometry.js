@@ -340,15 +340,20 @@
       turns.push({ i, at, gap: f.gap * hT, pitch: (leg[i].avg + leg[i + 1].avg) / 2 + t, u });
     }
     const mouthEnd = last.fromA ? 'B' : 'A';
-    const mouthBack = f.mouth === 'back' && n > 0;
+    // an MLTL ends in its port: the opening is the port's size along the leg
+    const pt = design.type === 'mltl' && L.port;
+    const mouthH = pt ? (pt.shape === 'slot' ? pt.h : pt.d) : L.hL;
+    // an MLTL port set up from the end is on the back panel, over the last leg, and the line runs to the end wall
+    const tapped = pt && (pt.at || 0) > 0;
+    const mouthBack = f.mouth === 'back' && n > 0 && !tapped;
     const sumGap = turns.reduce((s, x) => s + x.gap, 0), sumPitch = turns.reduce((s, x) => s + x.pitch, 0);
     // path = (n+1)·Lin − Σgap + Σpitch (− half the mouth opening when it is in the back panel)
-    const Lin = (L.length + sumGap - sumPitch + (mouthBack ? L.hL / 2 : 0)) / legs;
+    const Lin = (L.length + sumGap - sumPitch + (mouthBack ? mouthH / 2 : 0)) / legs;
     // leg path lengths
     for (const g of leg) {
       let len = Lin;
       for (const x of turns) if (x.i === g.k || x.i === g.k - 1) len -= x.gap / 2;
-      if (mouthBack && g === last) len -= L.hL / 2;
+      if (mouthBack && g === last) len -= mouthH / 2;
       g.len = len;
     }
     // dividers: between leg i and i+1, fixed to the wall at the far end from their turn
@@ -374,7 +379,7 @@
     const warn = [];
     if (Lin < 2 * Math.max(...leg.map(g => Math.max(g.hA, g.hB)), 0) || leg.some(g => g.len <= 0)) warn.push('Too many folds for this length: the legs are shorter than the line is wide.');
     if (n > 0 && drvAlong > leg[0].len) warn.push('The driver sits past the first turn; it has to be on the first leg, behind the front baffle. Move it nearer the closed end.');
-    return { n, legs: leg, turns, dividers, lean, defl, Lin, Din, w, t, inside, ext, air, mouthEnd, mouthBack, mouthH: L.hL,
+    return { n, legs: leg, turns, dividers, lean, defl, Lin, Din, w, t, inside, ext, air, mouthEnd, mouthBack, mouthH, port: pt || null, portAt: tapped ? pt.at : 0,
       drvAlong, fold: f, warn, path: leg.reduce((s, g) => s + g.len, 0) + sumPitch };
   }
 

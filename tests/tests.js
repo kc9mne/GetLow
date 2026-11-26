@@ -1381,6 +1381,31 @@
     near('folded line: parallel dividers make a stepped taper (first leg = its middle)', par(0.05) / 0.25, 0.12 + (0.08 - 0.12) / 6, 1e-9);
   }
 
+  // ---- MLTL and King's TL alignments ----
+  {
+    const E = GL.enclosures, c = GL.phys.c;
+    const line = { shape: 'rect', length: 1, width: 0.15, h0: 0.15, hL: 0.15, mouthFlanged: true };
+    const port = (d, len) => ({ shape: 'round', d, len, count: 1, end: 'flanged-free', flareOut: 0, flareIn: 0, qp: 100 });
+    // a port as big as the line with no length: about the open quarter wave
+    near('MLTL: a full-size, zero-length port tunes like the open line plus the port end corrections', E.mltlTuning(line, port(Math.sqrt(4 * 0.0225 / Math.PI), 0)), c / 4 / (1 + (0.85 + 0.6133) * Math.sqrt(0.0225 / Math.PI)), 0.5);
+    // a small port: towards the Helmholtz tuning of the line's volume
+    const pt = port(0.03, 0.1), S = Math.PI * 0.03 * 0.03 / 4;
+    const Map = GL.phys.rho * (0.1 + (0.85 + 0.6133) * 0.015) / S;
+    const fh = 1 / (2 * Math.PI * Math.sqrt(Map * 0.0225 / (GL.phys.rho * c * c)));
+    near('MLTL: a small port tunes near the Helmholtz frequency of the line', E.mltlTuning(line, pt), fh, fh * 0.06);
+    const L2 = Object.assign({}, line, { port: port(0.05, 0) });
+    near('MLTL: the port length found tunes to the target', E.mltlTuning(L2, Object.assign({}, L2.port, { len: E.mltlPortLen(L2, 40) })), 40, 0.01);
+    // King's table and worked example (Satori WO24P-4: Vb 46.7 L, fb 28 Hz, TR 0.2)
+    near('King: SF for a 5:1 taper', E.taperSF(0.2), 0.71, 1e-9);
+    near('King: SF for 1:5 expanding', E.taperSF(5), 1.32, 1e-9);
+    const k = E.tlFromAlignment(0.071 / 1.5198, 28, 0.2);
+    near('King: line length 2.181 m (with c = 344)', k.length * 344 / c, 2.181, 0.002);
+    near('King: closed-end area 0.0357 m²', k.s0 * c / 344, 0.0357, 0.0002);
+    near('King: mouth area 0.2 × S0', k.sL / k.s0, 0.2, 1e-9);
+    // spec reader: "Fo" is Fs (Mark Audio, Madisound)
+    near('spec reader: Fo= 42.398 Hz is Fs', GL.specparse.parse('Fo= 42.398 Hz\nQts= 0.33').params.fs, 42.398, 1e-9);
+  }
+
   // ---- room modes and placement ----
   {
     const RM = GL.room, c = GL.phys.c;

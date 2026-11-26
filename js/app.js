@@ -764,7 +764,9 @@
     const fullSpeed = (pt) => maxOf(res.portVel[out.model.ports.indexOf(pt)].full).toFixed(1) + ' m/s';
     for (const pt of out.model.ports) if (!pt.mouth) items.push([pt.label, pt.fb.toFixed(1) + ' Hz', fullSpeed(pt) + ' at full power']);
     for (const pr of out.model.prs) items.push(['PR tuning', pr.fb.toFixed(1) + ' Hz', 'added mass ' + (pr.cfg.added * 1000).toFixed(0) + ' g']);
-    if (out.lineLay) {
+    if (out.lineLay && S.design.type === 'mltl') {
+      items.push(['Line alone', out.lineLay.quarter[0].toFixed(1) + ' Hz', 'open-ended quarter wave · air ' + U.fmt('vol', out.lineLay.air)]);
+    } else if (out.lineLay) {
       const m = out.model.ports.find(pt => pt.mouth);
       items.push(['Quarter-wave', out.lineLay.quarter[0].toFixed(1) + ' Hz', 'mouth peak ' + speed(m) + ' · air ' + U.fmt('vol', out.lineLay.air)]);
     }
@@ -1863,7 +1865,9 @@
     for (const pt of d.ports) out.push(portCard(pt));
     for (const pr of d.prs) out.push(prCard(pr));
     if (d.line) out.push(lineCard());
-    if (d.type === 'tl' && d.line.shape === 'rect') out.push(foldCard());
+    if (d.type === 'tl') out.push(kingCard());
+    if (d.type === 'mltl' && d.line.port) out.push(endPortCard());
+    if (E.isTL(d.type) && d.line.shape === 'rect') out.push(foldCard());
     if (d.horn) out.push(...hornCards());
     if (!E.isBoxless(d.type) && !E.isLine(d.type) && !E.isHorn(d.type)) {
       if (d.chambers.length > 1) out.push(layoutCard());
@@ -2119,7 +2123,7 @@
 
   // ---- folded transmission line
   const foldOf = (L) => (L.fold = Object.assign({}, G.FOLD_DEFAULT, L.fold || {}));
-  const folded = (d) => d && d.type === 'tl' && d.line && d.line.shape === 'rect' && d.line.fold && d.line.fold.n > 0;
+  const folded = (d) => d && E.isTL(d.type) && d.line && d.line.shape === 'rect' && d.line.fold && d.line.fold.n > 0;
   function foldCard() {
     const d = S.design, L = d.line, f = foldOf(L);
     const vert = f.legs === 'vertical';
@@ -2202,7 +2206,13 @@
     });
     const lastK = r.legs.length - 1, mEnd = r.mouthEnd;
     const aMouthEnd = mEnd === 'A' ? 0 : r.Lin;
-    if (r.mouthBack) {
+    if (r.portAt > 0) {
+      // MLTL port on the back panel, a little up from the closed end of the last leg
+      const am = mEnd === 'A' ? r.portAt : r.Lin - r.portAt;
+      pts.push(P(aMouthEnd, mid(lastK, mEnd)));
+      const o0 = P(am - r.mouthH / 2, r.Din), o1 = P(am + r.mouthH / 2, r.Din + t);
+      svg.append(sv('rect', { x: Math.min(o0[0], o1[0]), y: Math.min(o0[1], o1[1]), width: Math.abs(o1[0] - o0[0]), height: Math.abs(o1[1] - o0[1]), class: 'mouth' }));
+    } else if (r.mouthBack) {
       const am = mEnd === 'A' ? r.mouthH / 2 : r.Lin - r.mouthH / 2;
       pts.push(P(am, mid(lastK, mEnd)), P(am, r.Din + t));
       const o0 = P(mEnd === 'A' ? 0 : r.Lin - r.mouthH, r.Din), o1 = P(mEnd === 'A' ? r.mouthH : r.Lin, r.Din + t);
@@ -2228,7 +2238,7 @@
 
   // Area along the path, folded (as simulated) against the straight line.
   function areaSvg(d) {
-    const L = d.line, fn = E.lineAreaFn(L), st = E.lineAreaFn(Object.assign({}, L, { fold: null }));
+    const L = d.line, fn = E.lineAreaFn(L, d.type), st = E.lineAreaFn(Object.assign({}, L, { fold: null }), d.type);
     const N = 400, xs = [], ys = [], y2 = [];
     for (let i = 0; i <= N; i++) { const x = L.length * i / N; xs.push(x); ys.push(fn(Math.min(x, L.length - 1e-9))); y2.push(st(x)); }
     const top = Math.max(...ys, ...y2) * 1.1, Wd = 600, Hd = 150, m = 34;
@@ -2269,6 +2279,84 @@
     return { r, list };
   }
 
+  // M. J. King's method: a transmission line with the volume and tuning of a
+  // ported box alignment, for a chosen taper ratio (TR = mouth area / closed-end area).
+  const kingState = { vb: 0, fb: 0, tr: 0.2 };
+  function kingCard() {
+    const d = S.design, L = d.line, p = drvc().params, n = d.count;
+    const qb3 = () => { kingState.vb = 15 * Math.pow(p.qts, 2.87) * p.vas * n; kingState.fb = 0.42 * p.fs * Math.pow(p.qts, -0.9); };
+    if (!(kingState.vb > 0)) qb3();
+    const k = kingState;
+    const res = () => E.tlFromAlignment(k.vb, k.fb, k.tr);
+    return card('Size from a ported alignment',
+      h('p', { class: 'hint' }, 'Martin J. King\'s method: take a ported box\'s volume and tuning (from an alignment table, or QB3 here) and give the line that volume, with a length set by the tuning and the taper. ' +
+        'L = SF × c / (4·fb), S0 = Vb / (½·(1 + TR)·L), SL = TR × S0. SF comes from King\'s table: 0.71 for a 5:1 taper, 1.00 straight, 1.32 for 1:5 expanding.'),
+      h('div', { class: 'grid2' },
+        uf('Box volume', 'vol', () => k.vb, (v) => { k.vb = v; }, { structural: false }),
+        uf('Tuning', 'freq', () => k.fb, (v) => { k.fb = v; }, { structural: false }),
+        nf('Taper ratio (mouth : closed end)', () => k.tr, (v) => { k.tr = Math.min(10, Math.max(0.1, v)); }, { digits: 2, structural: false, tip: '0.2 = tapered 5:1, 1 = straight, 5 = expanding 1:5' }),
+        btn('QB3 for this driver', () => { qb3(); renderSide(); }, 'btn small')),
+      h('div', { class: 'row-btns' },
+        btn('Tapered 5:1', () => { k.tr = 0.2; renderSide(); }, 'btn small ghost'),
+        btn('Straight', () => { k.tr = 1; renderSide(); }, 'btn small ghost'),
+        btn('Expanding 1:5', () => { k.tr = 5; renderSide(); }, 'btn small ghost')),
+      liveText(() => {
+        const r = res(), sd = p.sd * n;
+        return 'SF ' + E.taperSF(k.tr).toFixed(2) + ' → length ' + U.fmt('len', r.length) + ', closed end ' + U.fmt('area', r.s0) + ' (' + (r.s0 / sd).toFixed(2) + ' × Sd), mouth ' + U.fmt('area', r.sL) + ' (' + (r.sL / sd).toFixed(2) + ' × Sd)';
+      }, 'hint'),
+      h('div', { class: 'row-btns' }, btn('Apply to the line', () => {
+        const r = res();
+        L.length = r.length;
+        if (L.shape === 'round') { L.d0 = Math.sqrt(4 * r.s0 / Math.PI); L.dL = Math.sqrt(4 * r.sL / Math.PI); }
+        else {
+          // keep the width unless the line would get very flat or very deep
+          const big = Math.max(r.s0, r.sL);
+          if (big / L.width > 3 * L.width || big / L.width < L.width / 3) L.width = Math.sqrt(big);
+          L.h0 = r.s0 / L.width; L.hL = r.sL / L.width;
+        }
+        changed(true);
+      }, 'btn primary')),
+      h('p', { class: 'hint' }, 'King then offsets the driver along the line (to clean up the ¾-wave resonance) and stuffs the first ¾ of the line with about 0.5 lb/ft³ of fibre. Tune without stuffing first, so the resonances are easy to see.'));
+  }
+
+  // MLTL: the port that closes the end of the line
+  function endPortCard() {
+    const d = S.design, L = d.line, pt = L.port;
+    let target = E.mltlTuning(L);
+    const kids = [
+      sel('Shape', [['round', 'Round'], ['slot', 'Slot (rectangular)']], () => pt.shape, (v) => {
+        if (v === 'slot' && pt.shape !== 'slot') { const a = Math.PI * pt.d * pt.d / 4; pt.w = Math.min(L.width, Math.sqrt(a) * 2); pt.h = a / pt.w; }
+        if (v === 'round' && pt.shape === 'slot') pt.d = Math.sqrt(4 * pt.w * pt.h / Math.PI);
+        pt.shape = v;
+      }),
+      pt.shape === 'slot'
+        ? h('div', { class: 'grid2' }, uf('Width', 'len', () => pt.w, (v) => { pt.w = v; }), uf('Height', 'len', () => pt.h, (v) => { pt.h = v; }))
+        : uf('Diameter', 'len', () => pt.d, (v) => { pt.d = v; }),
+      h('div', { class: 'grid2' },
+        uf('Length', 'len', () => pt.len, (v) => { pt.len = v; }, { positive: false, min: 0, tip: '0 = a hole in the panel (its thickness still counts as length if you enter it)' }),
+        nf('Count', () => pt.count, (v) => { pt.count = Math.max(1, Math.round(v)); }, { digits: 0, min: 1 })),
+      sel('End correction', Object.entries(E.END_CORR).map(([k, v]) => [k, v.name]), () => pt.end, (v) => { pt.end = v; }),
+      uf('Port centre up from the end', 'len', () => pt.at || 0, (v) => { pt.at = Math.max(0, Math.min(L.length * 0.5, v)); }, { positive: false, min: 0, structural: true,
+        tip: '0 = the port closes the end of the line. A few inches up (on the baffle) can cancel some of the line\'s harmonics: try steps of an inch and watch 400–900 Hz' }),
+      h('div', { class: 'grid2' },
+        uf('Tune to', 'freq', () => target, (v) => { target = v; }, { structural: false }),
+        btn('Set port length', () => {
+          const len = E.mltlPortLen(L, target);
+          if (len <= 0) return toast('Even a hole tunes below ' + target.toFixed(1) + ' Hz with this port: make the port bigger or the line shorter.', true);
+          pt.len = len; changed(true);
+        })),
+      liveText(() => {
+        const f = E.mltlTuning(L), a = (pt.shape === 'slot' ? pt.w * pt.h : Math.PI * pt.d * pt.d / 4) * pt.count, S0 = E.lineAreas(L).sL;
+        return 'Tuning ' + f.toFixed(1) + ' Hz (line ' + E.quarterWave(L, 1)[0].toFixed(1) + ' Hz alone) · port ' + U.fmt('area', a) + ', ' + (100 * a / S0).toFixed(0) + '% of the line\'s end';
+      }, 'hint'),
+      h('p', { class: 'hint' }, 'The port\'s air mass lowers the line\'s tuning, so the line can be about a third shorter than a plain one for the same bass. ' +
+        'Starting points (B. Brines, via Neurochrome): see the shapes on the Line card, a port about 0.5 × Sd in area, tuned at or a little below Fs. A bigger port needs to be longer. ' +
+        'Port air speed shows on the Port air speed chart; keep it under about 10 m/s at normal levels. ' +
+        'Bob Brines\'s method: tune with no stuffing first, so the line\'s resonances are easy to see; nudge the driver position (a few mm can remove a harmonic blob), set the port length for the lowest flat bass, move the port up from the end an inch at a time to cancel harmonics, then stuff the top half of the line just enough to calm what is left.'),
+    ];
+    return card('End port (mass loading)', ...kids);
+  }
+
   function lineCard() {
     const d = S.design, L = d.line;
     const kids = [
@@ -2284,8 +2372,19 @@
       uf('Diameter at mouth', 'len', () => L.dL, (v) => { L.dL = v; })));
     kids.push(h('div', { class: 'grid2' },
       uf('Driver position', 'pct', () => L.drvPos, (v) => { L.drvPos = Math.min(0.95, Math.max(0, v)); }, { positive: false, min: 0, tip: '0% = at the closed end' }),
-      uf('Stuffing', 'pct', () => L.stuffing, (v) => { L.stuffing = Math.min(1, Math.max(0, v)); }, { positive: false, min: 0, tip: 'Simplified damping model' })),
-      check('Mouth set in a baffle (flanged)', () => L.mouthFlanged, (v) => { L.mouthFlanged = v; }));
+      uf('Stuffing', 'pct', () => L.stuffing, (v) => { L.stuffing = Math.min(1, Math.max(0, v)); }, { positive: false, min: 0, tip: 'Simplified damping model' }),
+      uf('Stuffed down to', 'pct', () => L.stuffTo ?? 1, (v) => { L.stuffTo = Math.min(1, Math.max(0, v)); }, { positive: false, min: 0, tip: 'How far down the line the stuffing goes, from the closed end: 50% = the top half' })),
+      d.type === 'mltl' ? null : check('Mouth set in a baffle (flanged)', () => L.mouthFlanged, (v) => { L.mouthFlanged = v; }));
+    if (d.type === 'mltl' && L.shape === 'rect') {
+      // B. Brines's three MLTL shapes (driver position as a share of the length)
+      const sdT = drvc().params.sd * d.count;
+      const shape = (top, bottom, pos) => () => { L.h0 = top * sdT / L.width; L.hL = bottom * sdT / L.width; L.drvPos = pos; changed(true); };
+      kids.push(h('div', { class: 'row-btns' },
+        btn('Straight (4·Sd)', shape(4, 4, 0.25), 'btn small'),
+        btn('Narrow top (TQWT)', shape(1, 4, 0.45), 'btn small'),
+        btn('Wide top', shape(4, 1, 0.2), 'btn small')),
+        h('p', { class: 'hint' }, 'Shapes from Bob Brines: straight 4·Sd with the driver at 0.25 of the length; narrow top 1·Sd → 4·Sd, driver at 0.40–0.50; wide top 4·Sd → 1·Sd, driver at 0.20. Drivers with Qts under about 0.35 usually suit the straight line. After a change, set the port length again on the End port card.'));
+    }
     if (d.type === 'pipe') {
       kids.push(check('Open back (no rear chamber)', () => d.mount.rear === 'out', (v) => {
         if (v) { d._rear = d.chambers[0]; d.chambers = []; d.mount.rear = 'out'; }
@@ -2295,6 +2394,7 @@
     kids.push(liveText(() => {
       const q = E.quarterWave(L, 4);
       const a = E.lineAreas(L);
+      if (d.type === 'mltl' && L.port) return 'Line alone (open end) ' + q[0].toFixed(0) + ' Hz; with the end port ' + E.mltlTuning(L).toFixed(1) + ' Hz · area ' + U.fmt('area', a.s0) + ' → ' + U.fmt('area', a.sL);
       return 'Resonances ' + q.map(x => x.toFixed(0)).join(', ') + ' Hz · area ' + U.fmt('area', a.s0) + ' → ' + U.fmt('area', a.sL);
     }, 'hint'));
     kids.push(h('p', { class: 'hint' }, 'The line is modelled as a stepped tube (48 segments; more when folded, to follow each turn). Stuffing uses a simplified loss model, so treat damping results as a guide.'));
@@ -2316,11 +2416,17 @@
           'Legs along the path: ' + r.legs.map((g, i) => (i + 1) + ': ' + sz(g.len) + ' long, ' + sz(g.hA) + (Math.abs(g.hA - g.hB) > 1e-4 ? ' → ' + sz(g.hB) : '') + ' deep').join('; ') + '. ' +
           'Turn gaps ' + r.turns.map(x => sz(x.gap)).join(', ') + '. ' +
           r.dividers.map((dv, i) => 'Divider ' + (i + 1) + ': ' + sz(dv.zA) + ' behind the front at the ' + endName(r, 'A') + ', ' + sz(dv.zB) + ' at the ' + endName(r, 'B') + ', fixed to the ' + endName(r, dv.from) + '.').join(' ') +
-          ' Driver centre ' + sz(r.drvAlong) + ' from the closed end, on the front baffle. Mouth ' + U.fmt('area', r.w * r.mouthH) + (r.mouthBack ? ' in the back panel at the ' + endName(r, r.mouthEnd) : ' through the ' + endName(r, r.mouthEnd) + ' panel') + '.'),
+          ' Driver centre ' + sz(r.drvAlong) + ' from the closed end, on the front baffle. ' +
+          (r.port ? 'End port ' + portSize(r.port, sz) : 'Mouth ' + U.fmt('area', r.w * r.mouthH)) +
+          (r.portAt > 0 ? ' in the back panel, its centre ' + sz(r.portAt) + ' from the ' + endName(r, r.mouthEnd) + ' inside' : r.mouthBack ? ' in the back panel at the ' + endName(r, r.mouthEnd) : ' through the ' + endName(r, r.mouthEnd) + ' panel') +
+          (r.port ? ', centred on the last leg; a long port can run inside the leg' : '') + '.'),
         r.warn.length ? h('p', { class: 'hint warnline' }, r.warn.join(' ')) : null);
     };
     fill(); live.push(fill);
     return card('Folded line: side view and cut list', host);
+  }
+  function portSize(pt, sz) {
+    return (pt.count > 1 ? pt.count + ' × ' : '') + (pt.shape === 'slot' ? sz(pt.w) + ' × ' + sz(pt.h) : 'Ø' + sz(pt.d)) + ', ' + sz(pt.len) + ' long';
   }
   function endName(r, end) {
     const f = r.fold, first = f.start === 'top';
@@ -2335,7 +2441,8 @@
       return [card('Line volume',
         liveText(() => {
           const l = G.lineLayout(d);
-          return 'Air inside the line: ' + U.volBoth(l.air) + (l.rearGross ? ' · rear chamber gross ' + U.fmt('vol', l.rearGross) : '');
+          return 'Air inside the line: ' + U.volBoth(l.air) + (l.rearGross ? ' · rear chamber gross ' + U.fmt('vol', l.rearGross) : '') +
+            (d.type === 'mltl' && d.line.port ? ' · end port ' + portSize(d.line.port, (m) => U.fmt('len', m)) : '');
         }, 'live'),
         h('p', { class: 'hint' }, folded(d) ? 'Folded as set on the Enclosure tab.' : 'A straight line. A rectangular transmission line can be folded into a box on the Enclosure tab (Folding).'))]
         .concat(folded(d) ? [foldBuildCard(d)] : []);
@@ -4031,9 +4138,9 @@
   // ---------------------------------------------------------------- new project
   const KINDS = [
     { id: 'sub', name: 'Subwoofer', desc: 'Bass in a room or car: sealed, ported, bandpass, horns.',
-      types: ['sealed', 'ported', 'pr', 'bp4', 'bp6p', 'bp6s', 'bp8', 'manifold', 'th', 'flh', 'tl'] },
+      types: ['sealed', 'ported', 'pr', 'bp4', 'bp6p', 'bp6s', 'bp8', 'manifold', 'th', 'flh', 'tl', 'mltl'] },
     { id: 'full', name: 'Full-range or bookshelf speaker', desc: 'A small speaker on a stand or desk: baffle step, off-axis and treble shown.',
-      types: ['sealed', 'ported', 'pr', 'tl', 'pipe', 'blh'] },
+      types: ['sealed', 'ported', 'pr', 'tl', 'mltl', 'pipe', 'blh'] },
     { id: 'array', name: 'Line array or column', desc: 'Small drivers stacked in a line, with or without a tweeter line.',
       types: ['sealed', 'ported', 'pr'] },
   ];
@@ -4043,7 +4150,7 @@
     bp6p: 'Both chambers ported: wider band, more output.', bp6s: 'Ported into a ported chamber: steep and loud.',
     bp8: 'Three chambers; very narrow, very loud.', manifold: 'Drivers face each other across a ported chamber.',
     th: 'A folded horn driven from both sides of the cone: big output from a modest box.', flh: 'A horn on the front of the cone: efficient, large.',
-    tl: 'A long folded line that reinforces the bass.', pipe: 'A straight tube loaded on the front.', blh: 'A horn on the back of the cone, for full-range drivers.',
+    tl: 'A long folded line that reinforces the bass.', mltl: 'A shorter line closed by a port: deep bass from a slim column.', pipe: 'A straight tube loaded on the front.', blh: 'A horn on the back of the cone, for full-range drivers.',
   };
   const KIND_SIZES = { sub: [5.25, 6.5, 8, 10, 12, 15, 18, 21], full: [2, 3, 4, 5.25, 6.5, 8], array: [2, 3, 4, 5.25] };
   const KIND_DEFAULT_SIZE = { sub: 12, full: 3, array: 3 };

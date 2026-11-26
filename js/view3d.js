@@ -332,6 +332,23 @@
         this.group.add(air);
       }
 
+      if (design.type === 'mltl' && L.port) {
+        // the end port: a short dark tube on the end of the line
+        const pt = L.port, pr = pt.shape === 'slot' ? Math.sqrt(pt.w * pt.h / Math.PI) : pt.d / 2;
+        const tube = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, Math.max(pt.len, 0.005), 32, 1, true), new THREE.MeshStandardMaterial({ color: DARK, side: THREE.DoubleSide }));
+        if ((pt.at || 0) > 0) {
+          // on the baffle (the driver's side), up from the closed end of the line
+          tube.rotation.x = Math.PI / 2;
+          tube.position.set(x0 + len - pt.at, 0, (L.width / 2) - Math.max(pt.len, 0.005) / 2 + 0.002);
+        } else {
+          tube.rotation.z = -Math.PI / 2;
+          tube.position.x = x0 + len + Math.max(pt.len, 0.005) / 2;
+        }
+        this.group.add(tube);
+        const cap = new THREE.Mesh(new THREE.PlaneGeometry(L.width, L.hL), new THREE.MeshStandardMaterial({ color: WOOD, side: THREE.DoubleSide, transparent: true, opacity: 0.6 }));
+        cap.rotation.y = Math.PI / 2; cap.position.x = x0 + len;
+        if (L.shape !== 'round') this.group.add(cap);
+      }
       const xd = x0 + L.drvPos * len;
       if (design.mount.front === 'line') {
         // driver at (or near) the closed end firing down the pipe
@@ -393,12 +410,32 @@
     }
     // mouth
     const last = r.legs.length - 1, mEnd = r.mouthEnd;
-    if (r.mouthBack) {
+    const pw = r.port ? Math.min(w, r.port.shape === 'slot' ? r.port.w : r.port.d) / 2 : hw;   // opening across the width
+    if (r.port && r.portAt > 0) {
+      // port on the back panel, up from the closed end of the last leg
+      const am = mEnd === 'A' ? r.portAt : r.Lin - r.portAt;
+      if (r.port.shape === 'slot') solid(rect(am - r.mouthH / 2, am + r.mouthH / 2, r.Din + t, r.Din + t + 0.002), -pw, pw, DARK, 1);
+      else {
+        const disc = new THREE.Mesh(new THREE.CircleGeometry(r.port.d / 2, 40), new THREE.MeshStandardMaterial({ color: DARK, side: THREE.DoubleSide }));
+        disc.position.copy(M(am, r.Din + t + 0.002, 0));
+        this.group.add(disc);
+      }
+    } else if (r.port && r.port.shape !== 'slot') {
+      // a round end port: a disc on the panel
+      const e = edge(last, mEnd);
+      const at = r.mouthBack ? M(mEnd === 'A' ? r.mouthH / 2 : r.Lin - r.mouthH / 2, r.Din + t + 0.002, 0) : M(mEnd === 'A' ? -t - 0.002 : r.Lin + t + 0.002, (e[0] + e[1]) / 2, 0);
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(r.port.d / 2, 40), new THREE.MeshStandardMaterial({ color: DARK, side: THREE.DoubleSide }));
+      disc.position.copy(at);
+      const nrm = r.mouthBack ? new THREE.Vector3(0, 0, -1) : M(mEnd === 'A' ? -1 : r.Lin + 1, 0, 0).sub(M(mEnd === 'A' ? 0 : r.Lin, 0, 0)).normalize();
+      disc.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm);
+      this.group.add(disc);
+    } else if (r.mouthBack) {
       const a0 = mEnd === 'A' ? 0 : r.Lin - r.mouthH, a1 = a0 + r.mouthH;
-      solid(rect(a0, a1, r.Din + t, r.Din + t + 0.002), -hw, hw, DARK, 1);
+      solid(rect(a0, a1, r.Din + t, r.Din + t + 0.002), -pw, pw, DARK, 1);
     } else {
       const e = edge(last, mEnd), a = mEnd === 'A' ? -t - 0.002 : r.Lin + t;
-      solid(rect(a, a + 0.002, e[0], e[1]), -hw, hw, DARK, 1);
+      const zc = (e[0] + e[1]) / 2, half = r.port ? r.port.h / 2 : (e[1] - e[0]) / 2;
+      solid(rect(a, a + 0.002, zc - half, zc + half), -pw, pw, DARK, 1);
     }
     // driver on the front baffle, over the first leg
     const p = drvc.params, rd = Math.min(p.dia > 0 ? p.dia / 2 : Math.sqrt(p.sd / Math.PI) * 1.18, hw);
