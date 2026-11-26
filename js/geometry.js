@@ -82,8 +82,18 @@
     const per = (design.driverDisp || 0) + (iso && iso.mode === 'tunnel' ? (iso.sleeve || 0) : 0);
     // manifold: half the drivers on each side
     const r2 = design.mount.rear2 && out[design.mount.rear2] ? design.mount.rear2 : null;
-    if (dch && r2) { out[dch].driver += per * design.count / 2; out[r2].driver += per * design.count / 2; }
-    else if (dch) out[dch].driver += per * design.count;
+    // a reversed driver leaves only its cone's dish on the rear side; its motor goes to the
+    // cone side (another chamber, or outside the box through the baffle)
+    const fr = where(design.mount.front) && design.mount.front !== dch ? design.mount.front : null;
+    const n = design.count, half = r2 ? Math.ceil(n / 2) : n;
+    for (let k = 0; k < n; k++) {
+      const back = r2 && k >= half ? r2 : dch;
+      if (!back) continue;
+      if (E().flipped(design, k)) {
+        out[back].driver += per * E().CONE_CAVITY;
+        if (fr) out[fr].driver += per;
+      } else out[back].driver += per;
+    }
     for (const p of design.ports) {
       const c = where(p.from) || where(p.to);
       if (!c) continue;

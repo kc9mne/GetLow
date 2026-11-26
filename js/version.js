@@ -9,6 +9,7 @@
       'Round ports on a baffle with drivers go in the free space around them, as a symmetric set: one centred below the drivers, two at the ends or centred above and below, four in the corners.',
       'Slots can sit in the centre ("Against: Centre"): two panels the full span of the box between the drivers, so the slot is also a brace. It is the default with two or more drivers on the baffle, and in a manifold\'s middle chamber, where it runs midway between the drivers on the dividers. If it doesn\'t fit there, a side wall is used and the port card says so.',
       'The port card\'s "Against" follows where the layout actually put the slot.',
+      'Driver mounting (Driver tab): normal, reversed (magnets outside, or in a manifold\'s ported middle chamber, MTL style) or push-pull (every other driver reversed). Displacement, motor room, the layout, 3D view and build sheet follow; wire reversed drivers + to −.',
     ] },
     { v: '1.1.5', date: '2026-11-26', items: [
       'Pipe with the driver inside the tube: the short end behind it can be ported too (Rear port card), for experiments.',

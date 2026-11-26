@@ -23,6 +23,14 @@
   ];
   const typeName = (id) => (TYPES.find(t => t.id === id) || {}).name || id;
   const isLine = (type) => type === 'tl' || type === 'mltl' || type === 'pipe';
+  // Driver mounting: 'normal', 'reversed' (motor on the other side of the panel: through
+  // the baffle, or in the ported chamber of a bandpass / manifold) or 'pushpull' (every
+  // other driver reversed). Reversed drivers are wired with reversed polarity, so the
+  // response is the same; the motors' room and displacement move. Not with isobaric pairs.
+  const flipMode = (d) => (d && !(d.iso && d.iso.on) && (d.flip === 'reversed' || d.flip === 'pushpull')) ? d.flip : 'normal';
+  const flipped = (d, k) => { const m = flipMode(d); return m === 'reversed' || (m === 'pushpull' && k % 2 === 1); };
+  // the cone's dish, on the cone side of a reversed driver: about a fifth of the motor's displacement
+  const CONE_CAVITY = 0.22;
   // the port closing a line's end: always on an MLTL, on a pipe when mass-loaded
   const endPort = (d) => d && d.line && d.line.port && (d.type === 'mltl' || (d.type === 'pipe' && d.line.massLoaded)) ? d.line.port : null;
   // where the driver sits along the line (share of the length): a round TL's driver is in the end cap
@@ -705,7 +713,7 @@
   }
 
   GL.enclosures = {
-    TYPES, END_CORR, typeName, isLine, isTL, endPort, rearPort, rearLine, drvAt, inTube, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
+    TYPES, END_CORR, typeName, isLine, isTL, flipMode, flipped, CONE_CAVITY, endPort, rearPort, rearLine, drvAt, inTube, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
     FLARES, SPACES, spaceOmega, makeSection, segSections, hornSegments, hornProfile, hornVolume, hornLength, hornMouth,
     idealMouth, hornFromCutoff, solveU,
     portArea, portEnd, portMass, portFb, lenForFb, portSpeedLimits, quietSize, flareLen, slotEdges, portProfile, portDisplacement, prMech, prFb, addedForFb,

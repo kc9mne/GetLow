@@ -393,6 +393,22 @@
     truthy('routing: bent leg clears the driver motor', r.legs[1].from[2] + r.R < backOfMotor || Math.abs(r.legs[1].from[0] - drv.x) > pd.drv.r, 'leg z ' + (r.legs[1].from[2] / IN).toFixed(2) + ', motor back ' + (backOfMotor / IN).toFixed(2));
     r = route(mk(20 * IN));
     truthy('routing: 20" port fits with one or two bends', r.fits && r.bends >= 1 && r.bends <= 2, PL.describe(r, x => (x / IN).toFixed(2)));
+    // reversed and push-pull drivers: the motor's displacement moves to the cone side
+    {
+      const dd = (flip, mount, chambers) => ({ chambers, prs: [], ports: [], count: 2, driverDisp: 0.004, mount, flip });
+      const ch = (id) => ({ id, name: id, vol: 0.03, bracing: 0 });
+      const sealed = (f) => G.displacements(dd(f, { rear: 'A', front: 'out' }, [ch('A')]), box).A.driver;
+      near('flip: normal, both motors inside', sealed('normal'), 0.008, 1e-12);
+      near('flip: reversed, only the cones\' dishes inside', sealed('reversed'), 2 * 0.004 * GL.enclosures.CONE_CAVITY, 1e-12);
+      near('flip: push-pull, one motor and one dish inside', sealed('pushpull'), 0.004 * (1 + GL.enclosures.CONE_CAVITY), 1e-12);
+      const mf = G.displacements(dd('reversed', { rear: 'R1', rear2: 'R2', front: 'F' }, [ch('R1'), ch('F'), ch('R2')]), box);
+      near('flip: manifold reversed, both motors in the middle chamber', mf.F.driver, 0.008, 1e-12);
+      near('flip: manifold reversed, a dish in each sealed chamber', mf.R1.driver + mf.R2.driver, 2 * 0.004 * GL.enclosures.CONE_CAVITY, 1e-12);
+      const isoD = Object.assign(dd('reversed', { rear: 'A', front: 'out' }, [ch('A')]), { iso: { on: true, mode: 'clamshell' } });
+      truthy('flip: not with isobaric pairs', GL.enclosures.flipMode(isoD) === 'normal', '');
+      const rv = PL.plan(dd('reversed', { rear: 'A', front: 'out' }, [ch('A')]), box, G.layout(dd('reversed', { rear: 'A', front: 'out' }, [ch('A')]), box), drvP).drivers;
+      truthy('flip: a reversed driver faces into the box', rv.every(x => x.flip && x.dir[2] < 0), rv.map(x => x.dir.join()).join(' '));
+    }
     // two drivers on the baffle: ports go in the free spaces, as a symmetric set
     {
       const two = (n, extra) => ({ chambers: [{ id: 'A', name: 'Box', vol: 0.04, bracing: 0 }], prs: [], count: 2, driverDisp: 0, mount: { rear: 'A', front: 'out' },

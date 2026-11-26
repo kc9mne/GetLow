@@ -451,17 +451,18 @@
     };
 
     const mount = design.mount;
+    const flip = (k) => GL.enclosures.flipped(design, k);
     if (mount.front === 'out') {
-      if (front[mount.rear]) for (let k = 0; k < design.count; k++) front[mount.rear].items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear });
+      if (front[mount.rear]) for (let k = 0; k < design.count; k++) front[mount.rear].items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear, flip: flip(k) });
     } else if (mount.rear2) {
       // manifold: half the drivers on each facing divider
       const a = divider(mount.rear, mount.front), b = divider(mount.rear2, mount.front);
       const half = Math.ceil(design.count / 2);
-      if (a) for (let k = 0; k < half; k++) a.items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear, cone: mount.front });
-      if (b) for (let k = 0; k < design.count - half; k++) b.items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear2, cone: mount.front });
+      if (a) for (let k = 0; k < half; k++) a.items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear, cone: mount.front, flip: flip(k) });
+      if (b) for (let k = half; k < design.count; k++) b.items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear2, cone: mount.front, flip: flip(k) });
     } else {
       const f = divider(mount.rear, mount.front);
-      if (f) for (let k = 0; k < design.count; k++) f.items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear, cone: mount.front });
+      if (f) for (let k = 0; k < design.count; k++) f.items.push({ type: 'drv', size: 2 * drv.r, into: mount.rear, cone: mount.front, flip: flip(k) });
     }
     for (const pt of design.ports) {
       let f = null;
@@ -664,14 +665,23 @@
         if (f.kind === 'front') { it.x = uv[0]; it.y = uv[1]; }
         const sp = chambers[it.into].sp;
         if (it.type === 'drv') {
-          // flange on the cone side, motor into `into`
-          const B = point(f, uv[0], uv[1], faceIn(f, it.cone));
           const a = intoDir(f, it.into);
-          sp.obs.push(frustum(B, a, drv.r, drv.depth, drv.taper));
-          // on a divider the cone fires into the other chamber: keep a clear zone in front of it
-          // (cone travel plus room for the air), or a slot panel could end up over the cone
-          if (it.cone && chambers[it.cone]) chambers[it.cone].sp.obs.push(frustum(B, neg(a), drv.r, Math.max(0.03, 0.25 * drv.r), 0));
-          out.drivers.push({ pos: B, dir: neg(a), r: drv.r, front: f.kind === 'front', into: it.into, iso, one });
+          const clearZone = (B2, d2) => frustum(B2, d2, drv.r, Math.max(0.03, 0.25 * drv.r), 0);
+          if (!it.flip) {
+            // flange on the cone side, motor into `into`
+            const B = point(f, uv[0], uv[1], faceIn(f, it.cone));
+            sp.obs.push(frustum(B, a, drv.r, drv.depth, drv.taper));
+            // on a divider the cone fires into the other chamber: keep a clear zone in front of it
+            // (cone travel plus room for the air), or a slot panel could end up over the cone
+            if (it.cone && chambers[it.cone]) chambers[it.cone].sp.obs.push(clearZone(B, neg(a)));
+            out.drivers.push({ pos: B, dir: neg(a), r: drv.r, front: f.kind === 'front', into: it.into, cone: it.cone, iso, one });
+          } else {
+            // reversed: flange on the `into` side, cone firing into it, motor through to the other side
+            const B = point(f, uv[0], uv[1], f.kind === 'front' ? f.coord - f.tb : faceIn(f, it.into));
+            sp.obs.push(clearZone(B, a));
+            if (it.cone && chambers[it.cone]) chambers[it.cone].sp.obs.push(frustum(B, neg(a), drv.r, drv.depth, drv.taper));
+            out.drivers.push({ pos: B, dir: a, r: drv.r, front: f.kind === 'front', into: it.into, cone: it.cone, flip: true, iso, one });
+          }
         } else if (it.type === 'pr') {
           const B = point(f, uv[0], uv[1], zF);
           sp.obs.push(frustum(B, [0, 0, -1], it.size / 2, it.size * 0.2));

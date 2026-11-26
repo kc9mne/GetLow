@@ -45,7 +45,7 @@
     const feats = [];
     if (plan) {
       for (const d of plan.drivers) {
-        feats.push({ kind: 'driver', face: d.front ? 'front' : 'divider', P: d.pos, d: drvCut.d, est: drvCut.est, label: 'Driver cutout', screws: scr, dir: d.dir });
+        feats.push({ kind: 'driver', face: d.front ? 'front' : 'divider', P: d.pos, d: drvCut.d, est: drvCut.est, label: d.flip ? 'Driver cutout (reversed: mount it from the other side, magnet out; wire it + to −)' : 'Driver cutout', screws: scr, dir: d.dir });
       }
       for (const p of plan.prs) {
         const pr = design.prs[0];

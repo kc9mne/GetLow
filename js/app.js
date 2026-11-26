@@ -425,13 +425,16 @@
   function motorRoom(plan, box, lay) {
     const out = [], depth = plan.drv.depth, seen = new Set();
     for (const d of plan.drivers) {
-      const key = d.front ? 'front' : d.into;
+      // a reversed driver's motor is on its cone side: outside the box on the baffle
+      if (d.flip && d.front) continue;
+      const room = d.flip ? d.cone : d.into;
+      const key = d.front ? 'front' : room;
       if (seen.has(key)) continue;
       seen.add(key);
       const need = depth + MOTOR_GAP;
       if (d.front) out.push({ front: true, need, have: lay.int.D + box.t * box.layers, estimated: plan.drv.estimated });
       else {
-        const c = lay.chambers.find(x => x.id === d.into);
+        const c = lay.chambers.find(x => x.id === room);
         if (c) out.push({ front: false, chamber: c, need, have: c.len + box.t, estimated: plan.drv.estimated });
       }
     }
@@ -1406,6 +1409,14 @@
             (iso().mode === 'clamshell' ? 'Wire the outer (reversed) driver with opposite polarity so both cones move together.' : 'The sleeve between the two is sealed and counted as displacement.');
         }, 'hint'),
       ] : null,
+      isoOn() || !dd.mount || dd.mount.front === 'line' || E.isBoxless(dd.type) || E.isHorn(dd.type) ? null : [
+        sel('Driver mounting', [['normal', dd.mount.front === 'out' ? 'Normal (magnets inside)' : 'Normal (magnets in the sealed side)'],
+          ['reversed', dd.mount.rear2 ? 'Reversed: baskets in the ported middle chamber (MTL style)' : dd.mount.front === 'out' ? 'Reversed (magnets outside, cones facing in)' : 'Reversed (magnets in the ported side)'],
+          ['pushpull', 'Push-pull (every other driver reversed)']], () => E.flipMode(dd), (v) => { dd.flip = v; }),
+        E.flipMode(dd) !== 'normal' ? h('p', { class: 'hint' }, 'Wire each reversed driver with reversed polarity (+ to −) so every cone moves the air the same way; the response is then the same as all normal. ' +
+          'What changes: a reversed driver\'s motor and basket sit on the other side of its panel' + (dd.mount.front === 'out' ? ' (outside the box)' : ' (in the next chamber)') + ', so that side holds its displacement and only the cone\'s dish (about a fifth of it, estimated) stays on this side. ' +
+          (E.flipMode(dd) === 'pushpull' ? 'Push-pull pairs a normal and a reversed driver: their moving masses push the cabinet opposite ways, cancelling vibration, and the motors\' even-order distortion largely cancels (not modelled).' : '')) : null,
+      ],
       sel('Wiring', [['parallel', 'Parallel'], ['series', 'Series']], () => dd.wiring, (v) => { dd.wiring = v; }, { structural: false }),
       uf('Displacement each', 'dvol', () => dd.driverDisp, (v) => { dd.driverDisp = v; }, { positive: false, min: 0, tip: 'Magnet + basket volume inside the box' }),
       d.vc ? [
