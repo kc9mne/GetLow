@@ -3,8 +3,12 @@
 (function () {
   'use strict';
   const GL = window.GL = window.GL || {};
-  GL.VERSION = '1.1.4';
+  GL.VERSION = '1.1.5';
   GL.CHANGES = [
+    { v: '1.1.5', date: '2026-11-26', items: [
+      'Pipe with the driver inside the tube: the short end behind it can be ported too (Rear port card), for experiments.',
+      'Fixed: a pipe with the driver inside the tube could lose its output after the mass-loading option was added.',
+    ] },
     { v: '1.1.4', date: '2026-11-26', items: [
       'Pipe: the driver can be mounted inside the tube (a mid-loaded pipe), with the closed tube behind it as its rear chamber.',
       'Pipe: mass-loaded option, closing the open end with a port (End port card, as on an MLTL).',

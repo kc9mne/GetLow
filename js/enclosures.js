@@ -29,6 +29,14 @@
   const drvAt = (d) => (isTL(d.type) && d.line.shape === 'round' && d.line.mountSide !== true) ? 0 : d.line.drvPos;
   // a pipe's driver mounted across the inside of the tube: its rear loads the closed part behind it
   const inTube = (d) => d.type === 'pipe' && d.mount.rear === 'lineRear';
+  // the port on the short, closed section behind a driver mounted inside a pipe
+  const rearPort = (d) => d && d.type === 'pipe' && d.mount && d.mount.rear === 'lineRear' && d.line.rearPorted && d.line.rearPort ? d.line.rearPort : null;
+  // that section as a line of its own, closed at the cone, ended by the rear port (for its tuning)
+  function rearLine(d) {
+    const L = d.line, u = drvAt(d), at = (a, b) => a + (b - a) * u;
+    return { shape: L.shape, width: L.width, length: Math.max(1e-3, u * L.length), h0: at(L.h0, L.hL), hL: L.h0, d0: at(L.d0, L.dL), dL: L.d0,
+      mouthFlanged: false, port: L.rearPort };
+  }
   // a line behind the driver (plain or mass-loaded): these fold
   const isTL = (type) => type === 'tl' || type === 'mltl';
   // bandpass family: F3 measured against the peak, with an upper roll-off
@@ -645,6 +653,14 @@
       }
       if (split) { nodes.line = split; nodes.lineRear = ln[k]; }
       else nodes.line = ln[Math.min(N - 1, Math.round(drvAt(design) * N))];
+      const rp = rearPort(design);
+      if (rp) {
+        // the short end, vented: a port from the closed end of the tube to outside
+        const Map = portMass(rp), fb = mltlTuning(rearLine(design));
+        const e = net.add(el.port(ln[0], 0, Map, 2 * Math.PI * fb * Map / rp.qp, portArea(rp) * rp.count));
+        model.ports.push({ el: e, label: 'Rear port', area: portArea(rp) * rp.count, cfg: rp, fb });
+        model.radiators.push({ label: 'Rear port', kind: 'port', id: rp.id, flow: (w, pp) => e.flow(w, pp) });
+      }
     }
 
     if (design.horn) {
@@ -675,7 +691,7 @@
     const nm = (id) => {
       if (id === 'out') return 'outside';
       if (id === 'line') return 'line';
-      if (id === 'lineRear') return 'closed end of the tube';
+      if (id === 'lineRear') return rearPort(design) ? 'short end of the tube → rear port → outside' : 'closed end of the tube';
       const hm = /^h(\d+)$/.exec(id);
       if (hm) return +hm[1] === 0 ? 'horn throat' : 'horn, end of segment ' + hm[1];
       return (design.chambers.find(c => c.id === id) || {}).name;
@@ -689,7 +705,7 @@
   }
 
   GL.enclosures = {
-    TYPES, END_CORR, typeName, isLine, isTL, endPort, drvAt, inTube, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
+    TYPES, END_CORR, typeName, isLine, isTL, endPort, rearPort, rearLine, drvAt, inTube, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
     FLARES, SPACES, spaceOmega, makeSection, segSections, hornSegments, hornProfile, hornVolume, hornLength, hornMouth,
     idealMouth, hornFromCutoff, solveU,
     portArea, portEnd, portMass, portFb, lenForFb, portSpeedLimits, quietSize, flareLen, slotEdges, portProfile, portDisplacement, prMech, prFb, addedForFb,

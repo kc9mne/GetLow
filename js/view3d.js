@@ -349,6 +349,15 @@
         cap.rotation.y = Math.PI / 2; cap.position.x = x0 + len;
         if (L.shape !== 'round') this.group.add(cap);
       }
+      const rp = GL.enclosures.rearPort(design);
+      if (rp) {
+        // the short end's port, out of the closed end of the tube
+        const pr = rp.shape === 'slot' ? Math.sqrt(rp.w * rp.h / Math.PI) : rp.d / 2, pl = Math.max(rp.len, 0.005);
+        const tube = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, pl, 32, 1, true), new THREE.MeshStandardMaterial({ color: DARK, side: THREE.DoubleSide }));
+        tube.rotation.z = -Math.PI / 2;
+        tube.position.x = x0 - pl / 2;
+        this.group.add(tube);
+      }
       const xd = x0 + GL.enclosures.drvAt(design) * len;
       if (design.mount.front !== 'line' && L.shape === 'round' && !L.mountSide) {
         // a tube's driver sits in the end cap, firing out of the closed end

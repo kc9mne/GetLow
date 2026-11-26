@@ -1871,6 +1871,7 @@
     if (d.line) out.push(lineCard());
     if (d.type === 'tl') out.push(kingCard());
     if (E.endPort(d)) out.push(endPortCard());
+    if (E.rearPort(d)) out.push(endPortCard(true));
     if (E.isTL(d.type) && d.line.shape === 'rect') out.push(foldCard());
     if (d.horn) out.push(...hornCards());
     if (!E.isBoxless(d.type) && !E.isLine(d.type) && !E.isHorn(d.type)) {
@@ -2324,9 +2325,11 @@
   }
 
   // MLTL: the port that closes the end of the line
-  function endPortCard() {
-    const d = S.design, L = d.line, pt = L.port;
-    let target = E.mltlTuning(L);
+  // rear: the port on the short, closed section behind a driver mounted inside a pipe
+  function endPortCard(rear) {
+    const d = S.design, L = d.line, pt = rear ? L.rearPort : L.port;
+    const TL = rear ? E.rearLine(d) : L;    // the stretch of line the port tunes
+    let target = E.mltlTuning(TL);
     const kids = [
       sel('Shape', [['round', 'Round'], ['slot', 'Slot (rectangular)']], () => pt.shape, (v) => {
         if (v === 'slot' && pt.shape !== 'slot') { const a = Math.PI * pt.d * pt.d / 4; pt.w = Math.min(L.width, Math.sqrt(a) * 2); pt.h = a / pt.w; }
@@ -2340,25 +2343,26 @@
         uf('Length', 'len', () => pt.len, (v) => { pt.len = v; }, { positive: false, min: 0, tip: '0 = a hole in the panel (its thickness still counts as length if you enter it)' }),
         nf('Count', () => pt.count, (v) => { pt.count = Math.max(1, Math.round(v)); }, { digits: 0, min: 1 })),
       sel('End correction', Object.entries(E.END_CORR).map(([k, v]) => [k, v.name]), () => pt.end, (v) => { pt.end = v; }),
-      uf('Port centre up from the end', 'len', () => pt.at || 0, (v) => { pt.at = Math.max(0, Math.min(L.length * 0.5, v)); }, { positive: false, min: 0, structural: true,
+      rear ? null : uf('Port centre up from the end', 'len', () => pt.at || 0, (v) => { pt.at = Math.max(0, Math.min(L.length * 0.5, v)); }, { positive: false, min: 0, structural: true,
         tip: '0 = the port closes the end of the line. A few inches up (on the baffle) can cancel some of the line\'s harmonics: try steps of an inch and watch 400–900 Hz' }),
       h('div', { class: 'grid2' },
         uf('Tune to', 'freq', () => target, (v) => { target = v; }, { structural: false }),
         btn('Set port length', () => {
-          const len = E.mltlPortLen(L, target);
+          const len = E.mltlPortLen(rear ? E.rearLine(d) : L, target);
           if (len <= 0) return toast('Even a hole tunes below ' + target.toFixed(1) + ' Hz with this port: make the port bigger or the line shorter.', true);
           pt.len = len; changed(true);
         })),
       liveText(() => {
-        const f = E.mltlTuning(L), a = (pt.shape === 'slot' ? pt.w * pt.h : Math.PI * pt.d * pt.d / 4) * pt.count, S0 = E.lineAreas(L).sL;
-        return 'Tuning ' + f.toFixed(1) + ' Hz (line ' + E.quarterWave(L, 1)[0].toFixed(1) + ' Hz alone) · port ' + U.fmt('area', a) + ', ' + (100 * a / S0).toFixed(0) + '% of the line\'s end';
+        const T = rear ? E.rearLine(d) : L;
+        const f = E.mltlTuning(T), a = (pt.shape === 'slot' ? pt.w * pt.h : Math.PI * pt.d * pt.d / 4) * pt.count, S0 = E.lineAreas(T).sL;
+        return 'Tuning ' + f.toFixed(1) + ' Hz (' + (rear ? 'the short section, ' + U.fmt('len', T.length) + ', ' : 'line ') + E.quarterWave(T, 1)[0].toFixed(1) + ' Hz alone) · port ' + U.fmt('area', a) + ', ' + (100 * a / S0).toFixed(0) + '% of the ' + (rear ? 'tube' : 'line\'s end');
       }, 'hint'),
-      h('p', { class: 'hint' }, 'The port\'s air mass lowers the line\'s tuning, so the line can be about a third shorter than a plain one for the same bass. ' +
+      rear ? h('p', { class: 'hint' }, 'An experiment: the short section behind the driver vents through this port, so both sides of the cone play through ports or the open end, like a 6th-order bandpass built from tube. The tuning shown treats the short section as a closed line ended by the port; the response is simulated in full.') : h('p', { class: 'hint' }, 'The port\'s air mass lowers the line\'s tuning, so the line can be about a third shorter than a plain one for the same bass. ' +
         'Starting points (B. Brines, via Neurochrome): see the shapes on the Line card, a port about 0.5 × Sd in area, tuned at or a little below Fs. A bigger port needs to be longer. ' +
         'Port air speed shows on the Port air speed chart; keep it under about 10 m/s at normal levels. ' +
         'Bob Brines\'s method: tune with no stuffing first, so the line\'s resonances are easy to see; nudge the driver position (a few mm can remove a harmonic blob), set the port length for the lowest flat bass, move the port up from the end an inch at a time to cancel harmonics, then stuff the top half of the line just enough to calm what is left.'),
     ];
-    return card('End port (mass loading)', ...kids);
+    return card(rear ? 'Rear port (on the short end)' : 'End port (mass loading)', ...kids);
   }
 
   function lineCard() {
@@ -2402,6 +2406,17 @@
         if (v === 'tube' && L.drvPos < 0.05) L.drvPos = 0.2;
       }));
       if (behind === 'tube') kids.push(h('p', { class: 'hint' }, 'The driver sits on a ring or disc across the inside of the tube, firing towards the open end; the tube behind it is closed and acts as its rear chamber, a line of its own. "Driver position" is how far along the tube it sits (a mid-loaded pipe).'));
+      if (behind === 'tube') kids.push(check('Port the short end (behind the driver)', () => !!L.rearPorted, (v) => {
+        L.rearPorted = v;
+        if (v && !L.rearPort) {
+          const a = drvc().params.sd * d.count * 0.2;
+          L.rearPort = { id: 'prear', name: 'Rear port', from: 'lineRear', to: 'out', shape: 'round', d: Math.sqrt(4 * a / Math.PI), w: 0.05, h: 0.05, len: 0.05, count: 1,
+            end: 'flanged-free', qp: 100, wall: 0.003, flareOut: 0, flareIn: 0, alongWall: true, fullHeight: false, at: 0 };
+          // a little above Fs; a short section needs a long port to go lower
+          const len = E.mltlPortLen(E.rearLine(d), drvc().params.fs * 1.2);
+          L.rearPort.len = Math.max(0.01, Math.min(len, E.rearLine(d).length));
+        }
+      }, { structural: true }));
       kids.push(check('Mass-loaded: close the open end with a port', () => !!L.massLoaded, (v) => {
         L.massLoaded = v;
         if (v && !L.port) {
