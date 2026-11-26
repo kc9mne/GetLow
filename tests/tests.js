@@ -1402,6 +1402,12 @@
     near('King: line length 2.181 m (with c = 344)', k.length * 344 / c, 2.181, 0.002);
     near('King: closed-end area 0.0357 m²', k.s0 * c / 344, 0.0357, 0.0002);
     near('King: mouth area 0.2 × S0', k.sL / k.s0, 0.2, 1e-9);
+    // driver placement in tubes, and which lines are closed by a port
+    const tube = { type: 'tl', mount: { rear: 'line', front: 'out' }, line: { shape: 'round', drvPos: 0.3 } };
+    near('round TL: the driver is in the end cap', E.drvAt(tube), 0, 0);
+    near('round TL on a flat side baffle: at its position', E.drvAt(Object.assign({}, tube, { line: { shape: 'round', drvPos: 0.3, mountSide: true } })), 0.3, 0);
+    truthy('pipe: driver inside the tube when its rear is the closed end', E.inTube({ type: 'pipe', mount: { rear: 'lineRear' } }) && !E.inTube({ type: 'pipe', mount: { rear: 'R' } }), '');
+    truthy('end port: MLTL always, pipe only when mass-loaded', !!E.endPort({ type: 'mltl', line: { port: {} } }) && !E.endPort({ type: 'pipe', line: { port: {} } }) && !!E.endPort({ type: 'pipe', line: { port: {}, massLoaded: true } }), '');
     // spec reader: "Fo" is Fs (Mark Audio, Madisound)
     near('spec reader: Fo= 42.398 Hz is Fs', GL.specparse.parse('Fo= 42.398 Hz\nQts= 0.33').params.fs, 42.398, 1e-9);
   }

@@ -23,6 +23,12 @@
   ];
   const typeName = (id) => (TYPES.find(t => t.id === id) || {}).name || id;
   const isLine = (type) => type === 'tl' || type === 'mltl' || type === 'pipe';
+  // the port closing a line's end: always on an MLTL, on a pipe when mass-loaded
+  const endPort = (d) => d && d.line && d.line.port && (d.type === 'mltl' || (d.type === 'pipe' && d.line.massLoaded)) ? d.line.port : null;
+  // where the driver sits along the line (share of the length): a round TL's driver is in the end cap
+  const drvAt = (d) => (isTL(d.type) && d.line.shape === 'round' && d.line.mountSide !== true) ? 0 : d.line.drvPos;
+  // a pipe's driver mounted across the inside of the tube: its rear loads the closed part behind it
+  const inTube = (d) => d.type === 'pipe' && d.mount.rear === 'lineRear';
   // a line behind the driver (plain or mass-loaded): these fold
   const isTL = (type) => type === 'tl' || type === 'mltl';
   // bandpass family: F3 measured against the peak, with an upper roll-off
@@ -614,13 +620,16 @@
       const N = folded ? Math.min(160, Math.max(L.segments || 48, Math.ceil(L.length / (Math.min(L.h0, L.hL) / 4)))) : (L.segments || 48);
       const ln = [];
       for (let i = 0; i <= N; i++) ln.push(net.node('Line ' + i));
+      // driver inside the tube: the cone parts the tube at k, rear on the closed side, front on the open side
+      const k = Math.max(1, Math.min(N - 1, Math.round(drvAt(design) * N)));
+      const split = inTube(design) ? net.node('Line ' + k + ' (front of the cone)') : null;
       for (let i = 0; i < N; i++) {
         const S = area((i + 0.5) / N * L.length);
         // stuffing only as far down the line as it is set to go
         const stuffed = (i + 0.5) / N <= (L.stuffTo ?? 1) + 1e-9;
-        net.add(el.tube(ln[i], ln[i + 1], S, L.length / N, lineLoss(S, stuffed ? L.stuffing : 0)));
+        net.add(el.tube(split && i === k ? split : ln[i], ln[i + 1], S, L.length / N, lineLoss(S, stuffed ? L.stuffing : 0)));
       }
-      if (design.type === 'mltl' && L.port) {
+      if (endPort(design)) {
         // mass-loaded: the line ends in a port, whose air mass lowers the tuning
         // the port at the end of the line, or on the baffle a little above the
         // (then closed) end, where it can cancel some of the line's harmonics
@@ -634,7 +643,8 @@
         model.radiators.push({ label: 'Line mouth', flow: (w, pp) => m.flow(w, pp) });
         model.ports.push({ el: m, label: 'Line mouth', area: sL, cfg: null, fb: quarterWave(L, 1)[0], mouth: true });
       }
-      nodes.line = ln[Math.min(N - 1, Math.round(L.drvPos * N))];
+      if (split) { nodes.line = split; nodes.lineRear = ln[k]; }
+      else nodes.line = ln[Math.min(N - 1, Math.round(drvAt(design) * N))];
     }
 
     if (design.horn) {
@@ -665,6 +675,7 @@
     const nm = (id) => {
       if (id === 'out') return 'outside';
       if (id === 'line') return 'line';
+      if (id === 'lineRear') return 'closed end of the tube';
       const hm = /^h(\d+)$/.exec(id);
       if (hm) return +hm[1] === 0 ? 'horn throat' : 'horn, end of segment ' + hm[1];
       return (design.chambers.find(c => c.id === id) || {}).name;
@@ -672,13 +683,13 @@
     const parts = ['Cone rear → ' + nm(design.mount.rear) + (design.mount.rear2 ? ' / ' + nm(design.mount.rear2) : ''), 'cone front → ' + nm(design.mount.front)];
     for (const p of design.ports) parts.push(nm(p.from) + ' → ' + p.name + ' → ' + nm(p.to));
     for (const r of design.prs) parts.push(nm(r.from) + ' → ' + r.name + ' → outside');
-    if (design.line) parts.push(design.type === 'mltl' && design.line.port ? 'line → end port → outside' : 'line mouth → outside');
+    if (design.line) parts.push(endPort(design) ? 'line → end port → outside' : 'line mouth → outside');
     if (design.horn) parts.push((design.horn.attach ? nm(design.horn.attach) + ' → ' : '') + 'horn → mouth → outside');
     return parts.join(' · ');
   }
 
   GL.enclosures = {
-    TYPES, END_CORR, typeName, isLine, isTL, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
+    TYPES, END_CORR, typeName, isLine, isTL, endPort, drvAt, inTube, mltlTuning, mltlPortLen, taperSF, tlFromAlignment, isHorn, isBandpass, isBoxless, makeDesign, buildModel, describe,
     FLARES, SPACES, spaceOmega, makeSection, segSections, hornSegments, hornProfile, hornVolume, hornLength, hornMouth,
     idealMouth, hornFromCutoff, solveU,
     portArea, portEnd, portMass, portFb, lenForFb, portSpeedLimits, quietSize, flareLen, slotEdges, portProfile, portDisplacement, prMech, prFb, addedForFb,

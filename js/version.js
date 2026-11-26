@@ -3,8 +3,13 @@
 (function () {
   'use strict';
   const GL = window.GL = window.GL || {};
-  GL.VERSION = '1.1.3';
+  GL.VERSION = '1.1.4';
   GL.CHANGES = [
+    { v: '1.1.4', date: '2026-11-26', items: [
+      'Pipe: the driver can be mounted inside the tube (a mid-loaded pipe), with the closed tube behind it as its rear chamber.',
+      'Pipe: mass-loaded option, closing the open end with a port (End port card, as on an MLTL).',
+      'Round transmission lines and MLTLs put the driver in the end cap, firing out, as tubes are built; a flat side baffle is still an option.',
+    ] },
     { v: '1.1.3', date: '2026-11-26', items: [
       'New enclosure: mass-loaded transmission line (MLTL), a line closed by a port. End port card with "Set port length" for a tuning, the port\'s position up from the end, and Bob Brines\'s straight, narrow-top and wide-top shapes.',
       'Transmission lines: size one from a ported alignment (Martin J. King\'s method), with his taper length factors; the quarter-wave shown now allows for the taper.',

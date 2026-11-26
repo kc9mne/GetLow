@@ -332,7 +332,7 @@
         this.group.add(air);
       }
 
-      if (design.type === 'mltl' && L.port) {
+      if (GL.enclosures.endPort(design)) {
         // the end port: a short dark tube on the end of the line
         const pt = L.port, pr = pt.shape === 'slot' ? Math.sqrt(pt.w * pt.h / Math.PI) : pt.d / 2;
         const tube = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, Math.max(pt.len, 0.005), 32, 1, true), new THREE.MeshStandardMaterial({ color: DARK, side: THREE.DoubleSide }));
@@ -349,8 +349,11 @@
         cap.rotation.y = Math.PI / 2; cap.position.x = x0 + len;
         if (L.shape !== 'round') this.group.add(cap);
       }
-      const xd = x0 + L.drvPos * len;
-      if (design.mount.front === 'line') {
+      const xd = x0 + GL.enclosures.drvAt(design) * len;
+      if (design.mount.front !== 'line' && L.shape === 'round' && !L.mountSide) {
+        // a tube's driver sits in the end cap, firing out of the closed end
+        this.driver(new THREE.Vector3(x0, 0, 0), new THREE.Vector3(-1, 0, 0), Math.min(rDrv, L.d0 / 2));
+      } else if (design.mount.front === 'line') {
         // driver at (or near) the closed end firing down the pipe
         this.driver(new THREE.Vector3(xd, 0, 0), xAxis, Math.min(rDrv, (L.d0 || L.h0) / 2));
         if (side > 0) this.panel(side, side, side, x0 - side / 2, 0, 0, { opacity: 0.5 });

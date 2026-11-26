@@ -707,10 +707,14 @@
     // standing free: F3 of the box itself, before the baffle step takes its 6 dB
     const f = res.f, spl = res.splBox || res.spl;
     const n = f.length;
-    const bp = E.isBandpass(S.design.type);
+    // a mass-loaded pipe plays only through its port, like a bandpass; its peak is
+    // looked for below 4× the port tuning, past which the pipe's own resonances spike
+    const mlPipe = S.design.type === 'pipe' && !!E.endPort(S.design);
+    const bp = E.isBandpass(S.design.type) || mlPipe;
     let ref, i0 = 0;
     if (bp) {
-      for (let i = 1; i < n; i++) if (spl[i] > spl[i0]) i0 = i;
+      const top = mlPipe ? 4 * E.mltlTuning(S.design.line) : Infinity;
+      for (let i = 1; i < n && f[i] <= top; i++) if (spl[i] > spl[i0]) i0 = i;
       ref = spl[i0];
     } else if (out.hornLay) {
       // horns: -3 dB from the median level of the horn's working band
@@ -764,7 +768,7 @@
     const fullSpeed = (pt) => maxOf(res.portVel[out.model.ports.indexOf(pt)].full).toFixed(1) + ' m/s';
     for (const pt of out.model.ports) if (!pt.mouth) items.push([pt.label, pt.fb.toFixed(1) + ' Hz', fullSpeed(pt) + ' at full power']);
     for (const pr of out.model.prs) items.push(['PR tuning', pr.fb.toFixed(1) + ' Hz', 'added mass ' + (pr.cfg.added * 1000).toFixed(0) + ' g']);
-    if (out.lineLay && S.design.type === 'mltl') {
+    if (out.lineLay && E.endPort(S.design)) {
       items.push(['Line alone', out.lineLay.quarter[0].toFixed(1) + ' Hz', 'open-ended quarter wave · air ' + U.fmt('vol', out.lineLay.air)]);
     } else if (out.lineLay) {
       const m = out.model.ports.find(pt => pt.mouth);
@@ -1866,7 +1870,7 @@
     for (const pr of d.prs) out.push(prCard(pr));
     if (d.line) out.push(lineCard());
     if (d.type === 'tl') out.push(kingCard());
-    if (d.type === 'mltl' && d.line.port) out.push(endPortCard());
+    if (E.endPort(d)) out.push(endPortCard());
     if (E.isTL(d.type) && d.line.shape === 'rect') out.push(foldCard());
     if (d.horn) out.push(...hornCards());
     if (!E.isBoxless(d.type) && !E.isLine(d.type) && !E.isHorn(d.type)) {
@@ -2371,10 +2375,13 @@
       uf('Diameter at closed end', 'len', () => L.d0, (v) => { L.d0 = v; }),
       uf('Diameter at mouth', 'len', () => L.dL, (v) => { L.dL = v; })));
     kids.push(h('div', { class: 'grid2' },
-      uf('Driver position', 'pct', () => L.drvPos, (v) => { L.drvPos = Math.min(0.95, Math.max(0, v)); }, { positive: false, min: 0, tip: '0% = at the closed end' }),
+      E.isTL(d.type) && L.shape === 'round' && !L.mountSide
+        ? h('div', { class: 'hint' }, 'Driver in the end cap, firing out; its rear loads the tube from the closed end.')
+        : uf('Driver position', 'pct', () => L.drvPos, (v) => { L.drvPos = Math.min(0.95, Math.max(0, v)); }, { positive: false, min: 0, tip: '0% = at the closed end' }),
       uf('Stuffing', 'pct', () => L.stuffing, (v) => { L.stuffing = Math.min(1, Math.max(0, v)); }, { positive: false, min: 0, tip: 'Simplified damping model' }),
       uf('Stuffed down to', 'pct', () => L.stuffTo ?? 1, (v) => { L.stuffTo = Math.min(1, Math.max(0, v)); }, { positive: false, min: 0, tip: 'How far down the line the stuffing goes, from the closed end: 50% = the top half' })),
-      d.type === 'mltl' ? null : check('Mouth set in a baffle (flanged)', () => L.mouthFlanged, (v) => { L.mouthFlanged = v; }));
+      E.isTL(d.type) && L.shape === 'round' ? sel('Driver mounted', [['cap', 'In the end cap (usual for a tube)'], ['side', 'On the side, on a flat baffle']], () => L.mountSide ? 'side' : 'cap', (v) => { L.mountSide = v === 'side'; }) : null,
+      E.endPort(d) ? null : check('Mouth set in a baffle (flanged)', () => L.mouthFlanged, (v) => { L.mouthFlanged = v; }));
     if (d.type === 'mltl' && L.shape === 'rect') {
       // B. Brines's three MLTL shapes (driver position as a share of the length)
       const sdT = drvc().params.sd * d.count;
@@ -2386,15 +2393,30 @@
         h('p', { class: 'hint' }, 'Shapes from Bob Brines: straight 4·Sd with the driver at 0.25 of the length; narrow top 1·Sd → 4·Sd, driver at 0.40–0.50; wide top 4·Sd → 1·Sd, driver at 0.20. Drivers with Qts under about 0.35 usually suit the straight line. After a change, set the port length again on the End port card.'));
     }
     if (d.type === 'pipe') {
-      kids.push(check('Open back (no rear chamber)', () => d.mount.rear === 'out', (v) => {
-        if (v) { d._rear = d.chambers[0]; d.chambers = []; d.mount.rear = 'out'; }
-        else { d.chambers = [d._rear || { id: 'R', name: 'Rear (sealed)', vol: 0.01, ql: 10, qa: 100, bracing: 0 }]; d.mount.rear = 'R'; }
+      const behind = d.mount.rear === 'out' ? 'out' : d.mount.rear === 'lineRear' ? 'tube' : 'chamber';
+      kids.push(sel('Behind the driver', [['chamber', 'A sealed chamber (driver in the end of the pipe)'], ['tube', 'The closed end of the tube (driver mounted inside it)'], ['out', 'Open (no rear chamber)']], () => behind, (v) => {
+        if (d.chambers.length) d._rear = d.chambers[0];
+        if (v === 'chamber') { d.chambers = [d._rear || { id: 'R', name: 'Rear (sealed)', vol: 0.01, ql: 10, qa: 100, bracing: 0 }]; d.mount.rear = 'R'; }
+        else { d.chambers = []; d.mount.rear = v === 'tube' ? 'lineRear' : 'out'; }
+        // inside the tube the driver needs some closed tube behind it
+        if (v === 'tube' && L.drvPos < 0.05) L.drvPos = 0.2;
+      }));
+      if (behind === 'tube') kids.push(h('p', { class: 'hint' }, 'The driver sits on a ring or disc across the inside of the tube, firing towards the open end; the tube behind it is closed and acts as its rear chamber, a line of its own. "Driver position" is how far along the tube it sits (a mid-loaded pipe).'));
+      kids.push(check('Mass-loaded: close the open end with a port', () => !!L.massLoaded, (v) => {
+        L.massLoaded = v;
+        if (v && !L.port) {
+          const a = Math.min(E.lineAreas(L).sL * 0.5, drvc().params.sd * d.count * 0.5);
+          L.port = { id: 'pend', name: 'End port', from: 'line', to: 'out', shape: 'round', d: Math.sqrt(4 * a / Math.PI), w: 0.05, h: 0.05, len: 0.05, count: 1,
+            end: 'flanged-free', qp: 100, wall: 0.003, flareOut: 0, flareIn: 0, alongWall: true, fullHeight: false, at: 0 };
+          const len = E.mltlPortLen(L, E.quarterWave(L, 1)[0] * 0.7);
+          L.port.len = Math.max(0.01, len);
+        }
       }, { structural: true }));
     }
     kids.push(liveText(() => {
       const q = E.quarterWave(L, 4);
       const a = E.lineAreas(L);
-      if (d.type === 'mltl' && L.port) return 'Line alone (open end) ' + q[0].toFixed(0) + ' Hz; with the end port ' + E.mltlTuning(L).toFixed(1) + ' Hz · area ' + U.fmt('area', a.s0) + ' → ' + U.fmt('area', a.sL);
+      if (E.endPort(d)) return 'Line alone (open end) ' + q[0].toFixed(0) + ' Hz; with the end port ' + E.mltlTuning(L).toFixed(1) + ' Hz · area ' + U.fmt('area', a.s0) + ' → ' + U.fmt('area', a.sL);
       return 'Resonances ' + q.map(x => x.toFixed(0)).join(', ') + ' Hz · area ' + U.fmt('area', a.s0) + ' → ' + U.fmt('area', a.sL);
     }, 'hint'));
     kids.push(h('p', { class: 'hint' }, 'The line is modelled as a stepped tube (48 segments; more when folded, to follow each turn). Stuffing uses a simplified loss model, so treat damping results as a guide.'));
@@ -2442,7 +2464,7 @@
         liveText(() => {
           const l = G.lineLayout(d);
           return 'Air inside the line: ' + U.volBoth(l.air) + (l.rearGross ? ' · rear chamber gross ' + U.fmt('vol', l.rearGross) : '') +
-            (d.type === 'mltl' && d.line.port ? ' · end port ' + portSize(d.line.port, (m) => U.fmt('len', m)) : '');
+            (E.endPort(d) ? ' · end port ' + portSize(d.line.port, (m) => U.fmt('len', m)) : '');
         }, 'live'),
         h('p', { class: 'hint' }, folded(d) ? 'Folded as set on the Enclosure tab.' : 'A straight line. A rectangular transmission line can be folded into a box on the Enclosure tab (Folding).'))]
         .concat(folded(d) ? [foldBuildCard(d)] : []);
