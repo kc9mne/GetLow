@@ -2329,7 +2329,6 @@
   function endPortCard(rear) {
     const d = S.design, L = d.line, pt = rear ? L.rearPort : L.port;
     const TL = rear ? E.rearLine(d) : L;    // the stretch of line the port tunes
-    let target = E.mltlTuning(TL);
     const kids = [
       sel('Shape', [['round', 'Round'], ['slot', 'Slot (rectangular)']], () => pt.shape, (v) => {
         if (v === 'slot' && pt.shape !== 'slot') { const a = Math.PI * pt.d * pt.d / 4; pt.w = Math.min(L.width, Math.sqrt(a) * 2); pt.h = a / pt.w; }
@@ -2345,13 +2344,15 @@
       sel('End correction', Object.entries(E.END_CORR).map(([k, v]) => [k, v.name]), () => pt.end, (v) => { pt.end = v; }),
       rear ? null : uf('Port centre up from the end', 'len', () => pt.at || 0, (v) => { pt.at = Math.max(0, Math.min(L.length * 0.5, v)); }, { positive: false, min: 0, structural: true,
         tip: '0 = the port closes the end of the line. A few inches up (on the baffle) can cancel some of the line\'s harmonics: try steps of an inch and watch 400–900 Hz' }),
-      h('div', { class: 'grid2' },
-        uf('Tune to', 'freq', () => target, (v) => { target = v; }, { structural: false }),
-        btn('Set port length', () => {
-          const len = E.mltlPortLen(rear ? E.rearLine(d) : L, target);
-          if (len <= 0) return toast('Even a hole tunes below ' + target.toFixed(1) + ' Hz with this port: make the port bigger or the line shorter.', true);
-          pt.len = len; changed(true);
-        })),
+      // the port's tuning: type one and the port's length follows
+      uf('Tuning', 'freq', () => E.mltlTuning(rear ? E.rearLine(d) : L), (v) => {
+        const T = rear ? E.rearLine(d) : L;
+        const len = E.mltlPortLen(T, v);
+        if (len <= 0) { toast('Too high for this port: even as a plain hole it tunes to ' + E.mltlTuning(T, Object.assign({}, pt, { len: 0 })).toFixed(1) + ' Hz. Make the port bigger or the line shorter.', true); return; }
+        pt.len = len;
+        const got = E.mltlTuning(T);
+        if (Math.abs(got - v) > 0.05) toast('The longest port tried (' + U.fmt('len', len) + ') only reaches ' + got.toFixed(1) + ' Hz: make the port smaller to go lower.', true);
+      }, { structural: true, tip: 'Type a tuning and the port length is set for it' }),
       liveText(() => {
         const T = rear ? E.rearLine(d) : L;
         const f = E.mltlTuning(T), a = (pt.shape === 'slot' ? pt.w * pt.h : Math.PI * pt.d * pt.d / 4) * pt.count, S0 = E.lineAreas(T).sL;

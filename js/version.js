@@ -7,6 +7,7 @@
   GL.CHANGES = [
     { v: '1.1.5', date: '2026-11-26', items: [
       'Pipe with the driver inside the tube: the short end behind it can be ported too (Rear port card), for experiments.',
+      'End and rear ports: type a tuning and the port length follows at once (no separate button); a tuning the port can\'t reach says so.',
     ] },
     { v: '1.1.4', date: '2026-11-26', items: [
       'Pipe: the driver can be mounted inside the tube (a mid-loaded pipe), with the closed tube behind it as its rear chamber.',
