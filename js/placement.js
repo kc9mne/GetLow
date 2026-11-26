@@ -342,10 +342,10 @@
     for (const pt of design.ports) {
       if (pt.shape !== 'slot' || pt.via) continue;
       const plane = pt.to === 'out' ? 2 : sa;
-      if (pt.wallSide && sidesFor(plane).includes(pt.wallSide)) continue;      // the user's choice stands
+      if (pt.wallSide && (sidesFor(plane).includes(pt.wallSide) || pt.wallSide === 'center')) continue;      // the user's choice stands
       const cur = best.ports.find(x => x.pt === pt);
       if (!cur || cur.route.fits) continue;
-      for (const side of sidesFor(plane)) {
+      for (const side of (pt.to === 'out' ? ['center'] : []).concat(sidesFor(plane))) {
         if (side === cur.route.side) continue;
         const tryOver = Object.assign({}, over, { [pt.id]: side });
         const trial = planOnce(design, box, layout, params, tryOver);
@@ -519,6 +519,23 @@
       // slots first: each against its wall, shrinking the free area
       for (const s of f.slots) {
         const pt = s.pt;
+        // the middle of the face: a slot of two panels, across the face between the drivers
+        // (or along it, midway, when nothing is mounted on it), its panels a brace
+        const wantCentre = !s.viaSide && s.k === 0 && !f.split && (pt.wallSide === 'center' ||
+          (!pt.wallSide && !over[pt.id] && f.kind === 'front' && f.items.filter(it => it.type === 'drv').length >= 2) ||
+          // a chamber between two drivers' dividers (manifold): midway, clear of both cones
+          (!pt.wallSide && !over[pt.id] && f.kind === 'front' && busyWall(s.into, unit(sa, 1)) && busyWall(s.into, unit(sa, -1))) ||
+          over[pt.id] === 'center');
+        if (wantCentre) {
+          const sp0 = rect.hi[0] - rect.lo[0], sp1 = rect.hi[1] - rect.lo[1];
+          const hasDrv = f.items.some(it => it.type === 'drv');
+          const jN = hasDrv ? (sp0 >= sp1 ? 0 : 1) : (sp0 <= sp1 ? 0 : 1), jm = 1 - jN;
+          const c = (rect.lo[jN] + rect.hi[jN]) / 2, half = t + pt.w / 2;
+          const n = unit(f.uv[jN], 1);
+          f.split = { j: jN, lo: c - half, hi: c + half };
+          slotJobs.push({ f, s, side: 'center', n, wallEdge: c + half, e0: rect.lo[jm], e1: rect.hi[jm], fullSpan: rect.hi[jm] - rect.lo[jm], centre: true });
+          continue;
+        }
         let side = s.viaSide || (pt.wallSide && sidesFor(f.plane).includes(pt.wallSide) ? pt.wallSide : over[pt.id] || autoSide(f, s.into));
         const n = SIDES[side];
         const iN = axisOf(n), j = f.uv.indexOf(iN), jm = 1 - j;
@@ -550,12 +567,81 @@
       const dSize = drvItems.length ? drvItems[0].size : 0;
       const pitch = pitched ? Math.max(design.rowPitch, dSize * 0.5) : 0;
       const groupLen = pitched ? (drvItems.length - 1) * pitch + dSize : 0;
-      const total = pitched ? groupLen + items.filter(it => it.type !== 'drv').reduce((s, it) => s + it.size, 0)
-        : items.reduce((s, it) => s + it.size, 0);
-      const span0 = rect.hi[0] - rect.lo[0], span1 = rect.hi[1] - rect.lo[1];
-      const row = span0 >= span1 ? 0 : 1;
-      const along = row === 0 ? span0 : span1, across = row === 0 ? span1 : span0;
-      if (total > along + 1e-6 || items.some(it => it.size > across + 1e-6) || along < 0 || across < 0) f.crowded = true;
+      // lay `list` out in a row across `rc`; returns what the row needed
+      const placeRow = (list, rc) => {
+        const dI = list.filter(it => it.type === 'drv');
+        const pit = pitched && dI.length > 1;
+        const gLen = pit ? (dI.length - 1) * pitch + dSize : 0;
+        const total = pit ? gLen + list.filter(it => it.type !== 'drv').reduce((s2, it) => s2 + it.size, 0) : list.reduce((s2, it) => s2 + it.size, 0);
+        const sp0 = rc.hi[0] - rc.lo[0], sp1 = rc.hi[1] - rc.lo[1];
+        const row = sp0 >= sp1 ? 0 : 1;
+        const along = row === 0 ? sp0 : sp1, across = row === 0 ? sp1 : sp0;
+        const crowded = total > along + 1e-6 || list.some(it => it.size > across + 1e-6) || along < 0 || across < 0;
+        const gap = Math.max(0, (along - total) / (list.length + 1));
+        let cur = rc.lo[row] + gap;
+        const top = rc.hi[row] - Math.max(0.003, Math.min(pitch - dSize, along - total) || 0.003);
+        const oth = pit ? list.filter(it => it.type !== 'drv') : [];
+        const restLen = pit ? Math.max(0, top - gLen - rc.lo[row]) : 0;
+        const restGap = pit && oth.length ? Math.max(0, (restLen - oth.reduce((s2, it) => s2 + it.size, 0)) / (oth.length + 1)) : 0;
+        let restCur = rc.lo[row] + restGap;
+        for (const it of list) {
+          let c;
+          if (pit && it.type === 'drv') c = top - dSize / 2 - dI.indexOf(it) * pitch;
+          else if (pit) { c = restCur + it.size / 2; restCur += it.size + restGap; }
+          else { c = cur + it.size / 2; cur += it.size + gap; }
+          const uv = row === 0 ? [c, (rc.lo[1] + rc.hi[1]) / 2] : [(rc.lo[0] + rc.hi[0]) / 2, c];
+          it.u = uv[0]; it.v = uv[1];
+        }
+        return { row, along, across, total, crowded };
+      };
+      // Round ports in the free pockets around the drivers, as a symmetric set: one
+      // centred below (or above), two at the ends or centred top and bottom or in a
+      // pair of corners, four in the corners. Null when no set fits.
+      const pockets = (ports, rc) => {
+        const n = ports.length, s = Math.max(...ports.map(it => it.size)), m = 0.006;
+        const fixed = items.filter(it => !ports.includes(it));
+        const sp0 = rc.hi[0] - rc.lo[0], sp1 = rc.hi[1] - rc.lo[1];
+        const row = sp0 >= sp1 ? 0 : 1, ac = 1 - row;
+        const P = (r, a) => { const uv = [0, 0]; uv[row] = r; uv[ac] = a; return uv; };
+        const rLo = rc.lo[row] + s / 2 + m, rHi = rc.hi[row] - s / 2 - m, rMid = (rc.lo[row] + rc.hi[row]) / 2;
+        const aLo = rc.lo[ac] + s / 2 + m, aHi = rc.hi[ac] - s / 2 - m, aMid = (rc.lo[ac] + rc.hi[ac]) / 2;
+        if (rLo > rHi || aLo > aHi) return null;
+        const clear = (uv) => fixed.every(it => Math.hypot(uv[0] - it.u, uv[1] - it.v) >= (it.size + s) / 2 + m);
+        const apart = (set) => set.every((p, k) => set.every((q, l) => l <= k || Math.hypot(p[0] - q[0], p[1] - q[1]) >= s + m));
+        // in the face's own terms the low end of v is the bottom
+        const bottom = row === 0 ? aLo : aHi, topA = row === 0 ? aHi : aLo;
+        const sets = {
+          1: [[P(rMid, bottom)], [P(rMid, topA)], [P(rLo, aMid)], [P(rHi, aMid)]],
+          2: [[P(rLo, aMid), P(rHi, aMid)], [P(rMid, aLo), P(rMid, aHi)], [P(rLo, bottom), P(rHi, bottom)], [P(rLo, topA), P(rHi, topA)]],
+          3: [[P(rMid, bottom), P(rLo, aMid), P(rHi, aMid)], [P(rMid, bottom), P(rLo, bottom), P(rHi, bottom)]],
+          4: [[P(rLo, aLo), P(rHi, aLo), P(rLo, aHi), P(rHi, aHi)], [P(rLo, aMid), P(rHi, aMid), P(rMid, aLo), P(rMid, aHi)]],
+          6: [[P(rLo, aLo), P(rHi, aLo), P(rLo, aHi), P(rHi, aHi), P(rMid, aLo), P(rMid, aHi)]],
+        }[n] || [];
+        const pick = sets.find(set => set.every(clear) && apart(set));
+        if (!pick) return null;
+        ports.forEach((it, k) => { it.u = pick[k][0]; it.v = pick[k][1]; });
+        return pick;
+      };
+      let res;
+      const roundPorts = items.filter(it => it.type === 'port');
+      if (f.split) {
+        // a centre slot: the rest goes either side of it, half each
+        const a = { lo: rect.lo.slice(), hi: rect.hi.slice() }, b = { lo: rect.lo.slice(), hi: rect.hi.slice() };
+        a.hi[f.split.j] = f.split.lo; b.lo[f.split.j] = f.split.hi;
+        const left = [], right = [];
+        for (const type of ['drv', 'pr', 'port']) items.filter(it => it.type === type).forEach((it, k) => ((left.length <= right.length ? left : right)).push(it));
+        const ra = placeRow(left, a), rb = placeRow(right, b);
+        res = placeRow.call(null, [], rect);
+        res = Object.assign(res, { total: ra.total + rb.total + (f.split.hi - f.split.lo), crowded: ra.crowded || rb.crowded });
+      } else if (!pitched && drvItems.length && roundPorts.length && roundPorts.length < items.length) {
+        // drivers (and radiators) in their row, then the ports in the pockets around them
+        const rest = items.filter(it => it.type !== 'port');
+        const rr0 = placeRow(rest, rect);
+        if (!rr0.crowded && pockets(roundPorts, rect)) res = Object.assign(rr0, { total: rr0.total });
+        else res = placeRow(items, rect);
+      } else res = placeRow(items, rect);
+      const { row, along, across, total } = res;
+      if (res.crowded) f.crowded = true;
       // spare room on this face (for callers that want a margin)
       f.slack = items.length ? Math.min(along - total, across - Math.max(...items.map(it => it.size))) : Math.min(along, across);
       // what the row needs, by box axis (0 = W, 1 = H, 2 = D), so the box can be grown to fit
@@ -566,20 +652,8 @@
       const stayOthers = stay.filter(it => it.type !== 'drv');
       f.fit.fixed = { n: stay.length, maxSize: stay.length ? Math.max(...stay.map(it => it.size)) : 0,
         total: pitched ? groupLen + stayOthers.reduce((s2, it) => s2 + it.size, 0) : stay.reduce((s2, it) => s2 + it.size, 0) };
-      const gap = Math.max(0, (along - total) / (items.length + 1));
-      let cur = rect.lo[row] + gap;
-      // pitched: the driver group from the top end, the others evenly in the rest
-      const top = rect.hi[row] - Math.max(0.003, Math.min(pitch - dSize, along - total) || 0.003);
-      const others = pitched ? items.filter(it => it.type !== 'drv') : [];
-      const restLen = pitched ? Math.max(0, top - groupLen - rect.lo[row]) : 0;
-      const restGap = pitched && others.length ? Math.max(0, (restLen - others.reduce((s, it) => s + it.size, 0)) / (others.length + 1)) : 0;
-      let restCur = rect.lo[row] + restGap;
       for (const it of items) {
-        let c;
-        if (pitched && it.type === 'drv') c = top - dSize / 2 - drvItems.indexOf(it) * pitch;
-        else if (pitched) { c = restCur + it.size / 2; restCur += it.size + restGap; }
-        else { c = cur + it.size / 2; cur += it.size + gap; }
-        const uv = row === 0 ? [c, (rect.lo[1] + rect.hi[1]) / 2] : [(rect.lo[0] + rect.hi[0]) / 2, c];
+        const uv = [it.u, it.v];
         // a driver can be moved off centre on the front baffle (to spread out edge diffraction)
         if (it.type === 'drv' && f.kind === 'front' && design.offset) {
           const half = it.size / 2;
@@ -634,7 +708,11 @@
         wallName = (d) => axisOf(d) === sa ? (signOf(d) === signOf(n) ? wA(d) : wB(d)) : wA(d);
       }
       const face = f.kind === 'front' ? zF : faceIn(f, other(f, s.into));
-      const r = routeSlot(sp, { pt: s.pt, b: intoDir(f, s.into), n, face, wallEdge, e0, e1, t, tb: f.tb, allowBends: s.pt.bends !== 'none', wallName, cMin });
+      // a centre slot is always two panels; its "wall" is the middle of the face
+      const ptR = j.centre ? Object.assign({}, s.pt, { alongWall: false }) : s.pt;
+      const wn = j.centre ? (d) => (axisOf(d) === axisOf(n) ? 'middle' : wallName(d)) : wallName;
+      const r = routeSlot(sp, { pt: ptR, b: intoDir(f, s.into), n, face, wallEdge, e0, e1, t, tb: f.tb, allowBends: s.pt.bends !== 'none', wallName: wn, cMin });
+      if (j.centre) r.centre = true;
       if (s.via) {
         r.via = s.via;
         // share of the duct inside the via chamber: the run along its wall plus the way across it

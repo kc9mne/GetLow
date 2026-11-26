@@ -361,7 +361,8 @@
   // Full-height slots follow the box, and the box follows their displacement,
   // so settle the two together.
   function settlePorts(params) {
-    const slots = S.design.ports.filter(p => p.shape === 'slot' && (p.fullHeight || p.via));
+    // (any slot: one left on auto may land in the centre, which spans the box)
+    const slots = S.design.ports.filter(p => p.shape === 'slot');
     const braced = S.design.chambers.some(c => c.braces && c.braces.kind !== 'none');
     const boxed = !E.isBoxless(S.design.type);
     for (let it = 0; it < (slots.length || braced ? 5 : 3); it++) {
@@ -370,6 +371,8 @@
         // full span = the inside of whichever wall the slot sits against
         for (const p of slots) {
           const r = plan.ports.find(x => x.pt === p);
+          // a centre slot is two panels across the whole box (it is a brace)
+          if (r && r.route.centre) { p.alongWall = false; p.fullHeight = true; }
           if (r && p.fullHeight && r.route.fullSpan > 0) p.h = r.route.fullSpan;
           if (r && r.route.via) p.viaShare = r.route.viaShare;
         }
@@ -634,7 +637,10 @@
     R = out;
     // If the design was replaced underneath the panel, its fields point at
     // stale objects: rebuild the panel instead of updating it.
-    try { for (const f of liveSide) f(); } catch (e) { renderSide(); }
+    // a slot the layout has just put in the centre (or moved off it) changes the port card
+    const sig = slotSig();
+    if (sig !== sideSlotSig) renderSide();
+    else try { for (const f of liveSide) f(); } catch (e) { renderSide(); }
     try { for (const f of liveMain) f(); } catch (e) { console.error(e); renderMainView(); }
     renderMain();
     save();
@@ -1041,6 +1047,8 @@
     const s = h('select', { 'aria-label': label, onchange: (e) => { set(e.target.value); changed(o.structural !== false); } },
       options.map(([v, t]) => h('option', { value: v }, t)));
     s.value = get();
+    // a value that follows the latest results (e.g. where the layout put a port)
+    if (o.live) live.push(() => { if (document.activeElement !== s) s.value = get(); });
     return h('label', { class: 'field' }, h('span', { class: 'fl' }, label), h('span', { class: 'fi' }, s));
   }
   function check(label, get, set, o = {}) {
@@ -1060,7 +1068,11 @@
   // ---------------------------------------------------------------- side panel
   const TABS = [['driver', 'Driver'], ['enclosure', 'Enclosure'], ['optimize', 'Optimize'], ['compare', 'Compare'], ['array', 'Array'], ['build', 'Build'], ['signal', 'Signal'], ['tools', 'Tools']];
 
+  // which slots the current results put in the centre, to know when the side panel is out of date
+  let sideSlotSig = '';
+  const slotSig = () => (S.design && R && R.plan ? R.plan.ports.filter(x => x.pt.shape === 'slot').map(x => x.pt.id + (x.route.centre ? 'c' : '')).join() : '');
   function renderSide() {
+    sideSlotSig = slotSig();
     liveSide = [];
     const tabs = document.getElementById('tabs');
     tabs.innerHTML = '';
@@ -2014,6 +2026,7 @@
         const plane = pt.to === 'out' ? 2 : (S.box.split === 'W' ? 0 : 1);
         const names = { right: 'Right side', left: 'Left side', top: 'Top panel', bottom: 'Bottom panel', back: 'Back panel', front: 'Front baffle' };
         const sides = GL.placement.sidesFor(plane);
+        const centred = !pt.via && (((portFit(pt) || {}).route || {}).centre || pt.wallSide === 'center');
         // neighbours whose baffle the slot could open on (it then runs through them)
         const order = S.design.chambers.map(c => c.id);
         const i0 = order.indexOf(pt.from);
@@ -2024,9 +2037,11 @@
           pt.via ? h('p', { class: 'hint' }, 'The slot opens on the baffle of ' + chamberById(pt.via).name.toLowerCase() + ', runs back along its outer wall, along the back wall, ' +
             'through a notch in the divider and opens inside ' + chamberById(pt.from).name.toLowerCase() + '. That keeps the duct clear of the driver and frees the ported chamber\'s baffle. ' +
             'Its volume is shared between the two chambers by length.') : null,
-          pt.via ? null : sel('Against', sides.map(k => [k, names[k]]), () => sides.includes(pt.wallSide) ? pt.wallSide : ((portFit(pt) || {}).route || {}).side || GL.placement.defaultSide(plane), (v) => { pt.wallSide = v; }),
-          check('That wall is one side of the slot (no extra panel)', () => pt.alongWall !== false, (v) => { pt.alongWall = v; }),
-          check('Full span: the slot panel runs between the two opposite panels', () => !!pt.fullHeight, (v) => { pt.fullHeight = v; }, { structural: true }),
+          pt.via ? null : sel('Against', (pt.to === 'out' ? [['center', 'Centre (between the drivers; its panels brace the box)']] : []).concat(sides.map(k => [k, names[k]])),
+            () => pt.wallSide === 'center' || sides.includes(pt.wallSide) ? pt.wallSide : ((portFit(pt) || {}).route || {}).side || GL.placement.defaultSide(plane), (v) => { pt.wallSide = v; }, { live: true }),
+          centred ? h('p', { class: 'hint' }, 'In the middle of the baffle: two panels the full span of the box, between the drivers (or midway between them when they are on the dividers above and below), so the slot is also a brace.') : null,
+          centred ? null : check('That wall is one side of the slot (no extra panel)', () => pt.alongWall !== false, (v) => { pt.alongWall = v; }),
+          centred ? null : check('Full span: the slot panel runs between the two opposite panels', () => !!pt.fullHeight, (v) => { pt.fullHeight = v; }, { structural: true }),
           h('div', { class: 'grid2' },
             uf('Round-over at folds', 'len', () => pt.foldR || 0, (v) => { pt.foldR = v; }, { positive: false, min: 0,
               tip: 'Radius on the inside corner of each fold, where the air turns. A U-turn rounds the panel end (full round = half the panel thickness).' }),
@@ -2039,7 +2054,7 @@
               (r.foldR > S.box.t && r.shape !== 'U' ? 'A radius over the panel thickness needs a glued block or a half-round. ' : '') +
               (r.fill ? 'Fillet blocks of radius ' + U.fmt('len', r.foldR + r.w) + ' keep the slot the same width through the turn.' : '');
           }, 'hint'),
-          h('p', { class: 'hint' }, 'Tip: against a wall with full span is the easiest slot to build. The slot panel is a plain rectangle, glued on three edges, so it braces the box. The wall saves a panel and the volume that panel would take.'),
+          centred ? null : h('p', { class: 'hint' }, 'Tip: against a wall with full span is the easiest slot to build. The slot panel is a plain rectangle, glued on three edges, so it braces the box. The wall saves a panel and the volume that panel would take.'),
         ];
       })() : null,
       check('Hold tuning when volume or port size changes', () => pt.holdFb, (v) => { pt.holdFb = v; pt.fb = E.portFb(pt, vol()); }),

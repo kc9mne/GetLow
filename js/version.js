@@ -3,8 +3,13 @@
 (function () {
   'use strict';
   const GL = window.GL = window.GL || {};
-  GL.VERSION = '1.1.5';
+  GL.VERSION = '1.1.6';
   GL.CHANGES = [
+    { v: '1.1.6', date: '2026-11-26', items: [
+      'Round ports on a baffle with drivers go in the free space around them, as a symmetric set: one centred below the drivers, two at the ends or centred above and below, four in the corners.',
+      'Slots can sit in the centre ("Against: Centre"): two panels the full span of the box between the drivers, so the slot is also a brace. It is the default with two or more drivers on the baffle, and in a manifold\'s middle chamber, where it runs midway between the drivers on the dividers. If it doesn\'t fit there, a side wall is used and the port card says so.',
+      'The port card\'s "Against" follows where the layout actually put the slot.',
+    ] },
     { v: '1.1.5', date: '2026-11-26', items: [
       'Pipe with the driver inside the tube: the short end behind it can be ported too (Rear port card), for experiments.',
       'End and rear ports: type a tuning and the port length follows at once (no separate button); a tuning the port can\'t reach says so.',

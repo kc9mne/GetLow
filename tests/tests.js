@@ -392,7 +392,21 @@
     const backOfMotor = box.ext.D / 2 - pd.drv.depth;
     truthy('routing: bent leg clears the driver motor', r.legs[1].from[2] + r.R < backOfMotor || Math.abs(r.legs[1].from[0] - drv.x) > pd.drv.r, 'leg z ' + (r.legs[1].from[2] / IN).toFixed(2) + ', motor back ' + (backOfMotor / IN).toFixed(2));
     r = route(mk(20 * IN));
-    truthy('routing: 20" port fits with two bends', r.fits && r.bends === 2, PL.describe(r, x => (x / IN).toFixed(2)));
+    truthy('routing: 20" port fits with one or two bends', r.fits && r.bends >= 1 && r.bends <= 2, PL.describe(r, x => (x / IN).toFixed(2)));
+    // two drivers on the baffle: ports go in the free spaces, as a symmetric set
+    {
+      const two = (n, extra) => ({ chambers: [{ id: 'A', name: 'Box', vol: 0.04, bracing: 0 }], prs: [], count: 2, driverDisp: 0, mount: { rear: 'A', front: 'out' },
+        ports: [Object.assign({ id: 'p1', from: 'A', to: 'out', shape: 'round', d: 2.5 * IN, wall: 0.125 * IN, len: 6 * IN, count: n, face: 'front' }, extra)] });
+      const wide = Object.assign({}, box, { ext: { W: 30 * IN, H: 14 * IN, D: 14 * IN } });
+      const pl = (d) => PL.plan(d, wide, G.layout(d, wide), drvP);
+      const f1 = pl(two(1)).faces.A, ports1 = f1.items.filter(i => i.type === 'port'), drs = f1.items.filter(i => i.type === 'drv');
+      near('placement: one port centred between two drivers', ports1[0].x, (drs[0].x + drs[1].x) / 2, 1e-6);
+      truthy('placement: the drivers stay symmetric about the centre', Math.abs(drs[0].x + drs[1].x) < 1e-6, (drs[0].x / IN).toFixed(2) + ', ' + (drs[1].x / IN).toFixed(2));
+      const p4 = pl(two(4)).faces.A.items.filter(i => i.type === 'port');
+      truthy('placement: four ports in the four corners', new Set(p4.map(i => Math.sign(i.x) + ',' + Math.sign(i.y))).size === 4, p4.map(i => (i.x / IN).toFixed(1) + '/' + (i.y / IN).toFixed(1)).join(' '));
+      const sl = pl(two(1, { shape: 'slot', w: 2 * IN, h: 12 * IN, fullHeight: true })).ports[0].route;
+      truthy('placement: a slot with two drivers goes in the centre', !!sl.centre, 'side ' + sl.side);
+    }
     r = route(mk(30 * IN));
     truthy('routing: 30" port is reported as not fitting', !r.fits && r.short > 0, 'short ' + (r.short / IN).toFixed(2) + ' in');
     r = route(mk(14.67 * IN, { bends: 'none' }));
